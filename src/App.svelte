@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { UnlistenFn } from "@tauri-apps/api/event";
-  import { createChat } from "./lib/api";
+  import { createChat, validatePassword } from "./lib/api";
   import {
     onMessageNew,
     onPeerConnected,
@@ -51,6 +51,8 @@
   let sessionPassword = $state("");
   let passwordPromptOpen = $state(false);
   let pendingAction = $state<(() => void) | null>(null);
+  let passwordError = $state<string | null>(null);
+  let passwordValidating = $state(false);
 
   // Invite dialog
   let inviteDialogOpen = $state(false);
@@ -125,15 +127,29 @@
       action();
     } else {
       pendingAction = action;
+      passwordError = null;
       passwordPromptOpen = true;
     }
   }
 
-  function handlePasswordSubmit() {
+  async function handlePasswordSubmit() {
     if (!sessionPassword.trim()) return;
-    passwordPromptOpen = false;
-    pendingAction?.();
-    pendingAction = null;
+    passwordError = null;
+    passwordValidating = true;
+    try {
+      const valid = await validatePassword(sessionPassword);
+      if (!valid) {
+        passwordError = "Wrong password — must match the password used during identity creation";
+        return;
+      }
+      passwordPromptOpen = false;
+      pendingAction?.();
+      pendingAction = null;
+    } catch (err) {
+      passwordError = String(err);
+    } finally {
+      passwordValidating = false;
+    }
   }
 
   function handleSelectChat(chatId: string) {
@@ -267,9 +283,13 @@
             bind:value={sessionPassword}
             placeholder="Your password"
             onkeydown={(e) => { if (e.key === "Enter") handlePasswordSubmit(); }}
+            disabled={passwordValidating}
           />
-          <button class="primary" onclick={handlePasswordSubmit} disabled={!sessionPassword.trim()}>
-            Unlock
+          {#if passwordError}
+            <p class="text-error text-small">{passwordError}</p>
+          {/if}
+          <button class="primary" onclick={handlePasswordSubmit} disabled={!sessionPassword.trim() || passwordValidating}>
+            {passwordValidating ? "Verifying..." : "Unlock"}
           </button>
         </div>
       </div>

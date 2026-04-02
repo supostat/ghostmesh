@@ -157,6 +157,10 @@ export function getIdentity(): Promise<IdentityInfo> {
   return invoke("get_identity");
 }
 
+export function validatePassword(password: string): Promise<boolean> {
+  return invoke("validate_password", { password });
+}
+
 export function exportIdentity(password: string): Promise<number[]> {
   return invoke("export_identity", { password });
 }

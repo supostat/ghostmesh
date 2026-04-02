@@ -69,6 +69,23 @@ pub async fn get_identity(state: State<'_, AppState>) -> Result<IdentityInfo, St
 }
 
 #[tauri::command]
+pub async fn validate_password(
+    state: State<'_, AppState>,
+    password: String,
+) -> Result<bool, String> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    let stored = store
+        .get_identity()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| CoreError::IdentityNotInitialized.to_string())?;
+
+    match decrypt_key_storage(&password, &stored.signing_sk_enc) {
+        Ok(bytes) if bytes.len() == 64 => Ok(true),
+        _ => Ok(false),
+    }
+}
+
+#[tauri::command]
 pub async fn export_identity(
     state: State<'_, AppState>,
     password: String,

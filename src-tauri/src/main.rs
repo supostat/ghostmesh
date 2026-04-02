@@ -52,9 +52,10 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            // Identity (4)
+            // Identity (5)
             commands::identity::create_identity,
             commands::identity::get_identity,
+            commands::identity::validate_password,
             commands::identity::export_identity,
             commands::identity::import_identity,
             // Chats (6)
