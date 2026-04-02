@@ -8,12 +8,7 @@ pub mod crypto {
     pub mod sign;
 }
 
-pub mod store {
-    pub mod chats;
-    pub mod db;
-    pub mod messages;
-    pub mod outbox;
-}
+pub mod store;
 
 pub mod net {
     pub mod discovery;
