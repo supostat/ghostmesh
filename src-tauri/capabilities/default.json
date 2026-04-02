@@ -1,0 +1,11 @@
+{
+  "identifier": "default",
+  "description": "Default capability set for GhostMesh",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "clipboard-manager:default",
+    "notification:default"
+  ]
+}

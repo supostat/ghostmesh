@@ -1,0 +1,22 @@
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(npm install*)",
+      "Bash(npx*)",
+      "Bash(cargo*)",
+      "Bash(mkdir*)",
+      "Bash(cat*)",
+      "Bash(ls*)",
+      "Bash(cp*)",
+      "Bash(mv*)",
+      "Bash(cd*)",
+      "Write(*)",
+      "mcp__engram__memory_search",
+      "mcp__engram__memory_store",
+      "mcp__engram__memory_judge"
+    ]
+  }
+}
