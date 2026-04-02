@@ -29,4 +29,8 @@ pub mod sync {
     pub mod engine;
     pub mod frontier;
     pub mod lamport;
+
+    pub use engine::SyncEngine;
+    pub use frontier::{compute_diff_messages, frontier_contains, merge_frontiers};
+    pub use lamport::LamportClock;
 }

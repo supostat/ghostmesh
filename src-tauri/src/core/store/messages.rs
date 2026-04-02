@@ -170,6 +170,113 @@ impl Store {
         Ok(entries)
     }
 
+    pub fn get_messages_by_author(
+        &self,
+        chat_id: &ChatId,
+        author_peer_id: &PeerId,
+    ) -> Result<Vec<Message>, CoreError> {
+        let mut statement = self
+            .connection()
+            .prepare(
+                "SELECT message_id, chat_id, author_peer_id, lamport_ts, created_at,
+                        key_epoch, parent_ids, signature, payload_ciphertext, payload_nonce, received_at
+                 FROM messages
+                 WHERE chat_id = ?1 AND author_peer_id = ?2
+                 ORDER BY lamport_ts ASC",
+            )
+            .map_err(|e| {
+                CoreError::Store(format!("failed to prepare get_messages_by_author: {e}"))
+            })?;
+
+        let rows = statement
+            .query_map(
+                rusqlite::params![chat_id.as_slice(), author_peer_id.as_slice()],
+                |row| {
+                    let parent_ids_blob: Option<Vec<u8>> = row.get(6)?;
+                    Ok(MessageRow {
+                        message_id: row.get::<_, Vec<u8>>(0)?,
+                        chat_id: row.get::<_, Vec<u8>>(1)?,
+                        author_peer_id: row.get::<_, Vec<u8>>(2)?,
+                        lamport_ts: row.get(3)?,
+                        created_at: row.get(4)?,
+                        key_epoch: row.get(5)?,
+                        parent_ids_blob,
+                        signature: row.get(7)?,
+                        payload_ciphertext: row.get(8)?,
+                        payload_nonce: row.get::<_, Vec<u8>>(9)?,
+                        received_at: row.get(10)?,
+                    })
+                },
+            )
+            .map_err(|e| CoreError::Store(format!("failed to query messages by author: {e}")))?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            let raw = row
+                .map_err(|e| CoreError::Store(format!("failed to read message row: {e}")))?;
+            messages.push(message_row_to_message(raw)?);
+        }
+        Ok(messages)
+    }
+
+    pub fn get_messages_by_author_after(
+        &self,
+        chat_id: &ChatId,
+        author_peer_id: &PeerId,
+        after_lamport: u64,
+    ) -> Result<Vec<Message>, CoreError> {
+        let mut statement = self
+            .connection()
+            .prepare(
+                "SELECT message_id, chat_id, author_peer_id, lamport_ts, created_at,
+                        key_epoch, parent_ids, signature, payload_ciphertext, payload_nonce, received_at
+                 FROM messages
+                 WHERE chat_id = ?1 AND author_peer_id = ?2 AND lamport_ts > ?3
+                 ORDER BY lamport_ts ASC",
+            )
+            .map_err(|e| {
+                CoreError::Store(format!(
+                    "failed to prepare get_messages_by_author_after: {e}"
+                ))
+            })?;
+
+        let rows = statement
+            .query_map(
+                rusqlite::params![
+                    chat_id.as_slice(),
+                    author_peer_id.as_slice(),
+                    after_lamport
+                ],
+                |row| {
+                    let parent_ids_blob: Option<Vec<u8>> = row.get(6)?;
+                    Ok(MessageRow {
+                        message_id: row.get::<_, Vec<u8>>(0)?,
+                        chat_id: row.get::<_, Vec<u8>>(1)?,
+                        author_peer_id: row.get::<_, Vec<u8>>(2)?,
+                        lamport_ts: row.get(3)?,
+                        created_at: row.get(4)?,
+                        key_epoch: row.get(5)?,
+                        parent_ids_blob,
+                        signature: row.get(7)?,
+                        payload_ciphertext: row.get(8)?,
+                        payload_nonce: row.get::<_, Vec<u8>>(9)?,
+                        received_at: row.get(10)?,
+                    })
+                },
+            )
+            .map_err(|e| {
+                CoreError::Store(format!("failed to query messages by author after: {e}"))
+            })?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            let raw = row
+                .map_err(|e| CoreError::Store(format!("failed to read message row: {e}")))?;
+            messages.push(message_row_to_message(raw)?);
+        }
+        Ok(messages)
+    }
+
     pub fn update_frontier(
         &self,
         chat_id: &ChatId,
@@ -552,6 +659,103 @@ mod tests {
 
         let frontier = store.get_frontier(&sample_chat_id()).unwrap();
         assert_eq!(frontier.len(), 2);
+    }
+
+    // --- Messages by author ---
+
+    #[test]
+    fn get_messages_by_author_returns_only_matching() {
+        let store = test_store();
+        setup_chat(&store);
+
+        let peer_a = [0xAA; 16];
+        let peer_b = [0xBB; 16];
+
+        let mut msg_a = sample_message(1);
+        msg_a.message_id = [0x01; 32];
+        msg_a.author_peer_id = peer_a;
+
+        let mut msg_b = sample_message(2);
+        msg_b.message_id = [0x02; 32];
+        msg_b.author_peer_id = peer_b;
+
+        let mut msg_a2 = sample_message(3);
+        msg_a2.message_id = [0x03; 32];
+        msg_a2.author_peer_id = peer_a;
+
+        store.insert_message(&msg_a).unwrap();
+        store.insert_message(&msg_b).unwrap();
+        store.insert_message(&msg_a2).unwrap();
+
+        let messages = store
+            .get_messages_by_author(&sample_chat_id(), &peer_a)
+            .unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].lamport_ts, 1);
+        assert_eq!(messages[1].lamport_ts, 3);
+    }
+
+    #[test]
+    fn get_messages_by_author_empty_result() {
+        let store = test_store();
+        setup_chat(&store);
+
+        store.insert_message(&sample_message(1)).unwrap();
+
+        let messages = store
+            .get_messages_by_author(&sample_chat_id(), &[0xFF; 16])
+            .unwrap();
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn get_messages_by_author_after_filters_by_lamport() {
+        let store = test_store();
+        setup_chat(&store);
+
+        let peer = sample_peer_id();
+        for ts in 1..=5 {
+            let mut msg = sample_message(ts);
+            msg.message_id[1] = ts as u8;
+            store.insert_message(&msg).unwrap();
+        }
+
+        let messages = store
+            .get_messages_by_author_after(&sample_chat_id(), &peer, 3)
+            .unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].lamport_ts, 4);
+        assert_eq!(messages[1].lamport_ts, 5);
+    }
+
+    #[test]
+    fn get_messages_by_author_after_with_zero_returns_all() {
+        let store = test_store();
+        setup_chat(&store);
+
+        for ts in 1..=3 {
+            let mut msg = sample_message(ts);
+            msg.message_id[1] = ts as u8;
+            store.insert_message(&msg).unwrap();
+        }
+
+        let messages = store
+            .get_messages_by_author_after(&sample_chat_id(), &sample_peer_id(), 0)
+            .unwrap();
+        assert_eq!(messages.len(), 3);
+    }
+
+    #[test]
+    fn get_messages_by_author_after_beyond_max_returns_empty() {
+        let store = test_store();
+        setup_chat(&store);
+
+        store.insert_message(&sample_message(5)).unwrap();
+
+        let messages = store
+            .get_messages_by_author_after(&sample_chat_id(), &sample_peer_id(), 10)
+            .unwrap();
+        assert!(messages.is_empty());
     }
 
     #[test]
