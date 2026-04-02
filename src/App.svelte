@@ -227,7 +227,7 @@
     <p class="text-muted">Loading...</p>
   </main>
 {:else if !identity}
-  <OnboardingScreen />
+  <OnboardingScreen onCreated={(pw) => { sessionPassword = pw; }} />
 {:else}
   <main class="app-layout">
     <Sidebar
@@ -275,8 +275,8 @@
         </div>
         <div class="dialog-body">
           <p class="text-secondary text-small">
-            Password is needed to decrypt messages and sign actions.
-            It will be stored for this session.
+            Enter the password you set when creating your identity.
+            It decrypts your private keys for this session.
           </p>
           <input
             type="password"

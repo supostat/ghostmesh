@@ -2,6 +2,8 @@
   import { createIdentity } from "../lib/api";
   import { setIdentity } from "../lib/stores/identity.svelte";
 
+  let { onCreated }: { onCreated: (password: string) => void } = $props();
+
   let displayName = $state("");
   let password = $state("");
   let passwordConfirm = $state("");
@@ -24,6 +26,7 @@
     try {
       const identity = await createIdentity(displayName.trim(), password);
       setIdentity(identity);
+      onCreated(password);
     } catch (err) {
       error = String(err);
     } finally {
