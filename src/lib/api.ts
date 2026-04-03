@@ -19,6 +19,7 @@ export interface ChatInfo {
   last_message_preview?: string;
   last_message_at?: number;
   unread_count: number;
+  pending_key_exchange: boolean;
 }
 
 export interface ChatDetail {
@@ -134,6 +135,11 @@ export interface MemberEvent {
   chat_id: string;
   peer_id: string;
   display_name: string;
+}
+
+export interface ChatJoinComplete {
+  chat_id: string;
+  chat_name: string;
 }
 
 export interface Settings {

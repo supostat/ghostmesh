@@ -20,6 +20,7 @@
     loadChats,
     selectChat,
     getSelectedChatId,
+    getChatList,
     loadChats as refreshChats,
   } from "./lib/stores/chats.svelte";
   import {
@@ -67,6 +68,12 @@
   let identity = $derived(getIdentityState());
   let identityLoading = $derived(isIdentityLoading());
   let selectedChatId = $derived(getSelectedChatId());
+  let chats = $derived(getChatList());
+  let selectedChatPending = $derived(
+    selectedChatId
+      ? (chats.find((c) => c.chat_id === selectedChatId)?.pending_key_exchange ?? false)
+      : false,
+  );
 
   let eventUnlisteners: UnlistenFn[] = [];
 
@@ -247,6 +254,7 @@
         <ChatView
           chatId={selectedChatId}
           password={sessionPassword}
+          pendingKeyExchange={selectedChatPending}
           onSelectMessage={handleSelectMessage}
           onToggleInspector={handleToggleInspector}
           onGenerateInvite={handleGenerateInvite}

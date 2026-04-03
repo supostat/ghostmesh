@@ -10,4 +10,5 @@ pub struct AppState {
     pub lamport: Mutex<LamportClock>,
     pub peer_manager: Mutex<PeerManager>,
     pub settings: Mutex<Settings>,
+    pub session_password: Mutex<Option<String>>,
 }

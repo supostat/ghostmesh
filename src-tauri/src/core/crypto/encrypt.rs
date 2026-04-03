@@ -99,6 +99,49 @@ pub fn decrypt_key_storage(
         .map_err(|e| CoreError::Crypto(format!("aes-gcm decrypt failed (wrong password?): {e}")))
 }
 
+/// Wraps a key (or arbitrary secret) with a shared secret using XChaCha20-Poly1305.
+///
+/// Output format: nonce(24) || ciphertext
+pub fn wrap_key(
+    plaintext_key: &[u8],
+    shared_secret: &[u8; 32],
+) -> Result<Vec<u8>, CoreError> {
+    let cipher = XChaCha20Poly1305::new(shared_secret.into());
+    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext_key)
+        .map_err(|e| CoreError::Crypto(format!("wrap_key encrypt failed: {e}")))?;
+
+    let mut output = Vec::with_capacity(24 + ciphertext.len());
+    output.extend_from_slice(&nonce);
+    output.extend_from_slice(&ciphertext);
+    Ok(output)
+}
+
+/// Unwraps a key sealed by `wrap_key`.
+///
+/// Input format: nonce(24) || ciphertext
+pub fn unwrap_key(
+    sealed: &[u8],
+    shared_secret: &[u8; 32],
+) -> Result<Vec<u8>, CoreError> {
+    let minimum_len = 24 + 16; // nonce + poly1305 tag
+    if sealed.len() < minimum_len {
+        return Err(CoreError::Crypto(
+            "sealed data too short for wrap_key format".to_string(),
+        ));
+    }
+
+    let nonce = XNonce::from_slice(&sealed[..24]);
+    let ciphertext = &sealed[24..];
+
+    let cipher = XChaCha20Poly1305::new(shared_secret.into());
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| CoreError::Crypto(format!("unwrap_key decrypt failed: {e}")))
+}
+
 fn derive_key_from_password(password: &str, salt: &[u8]) -> Result<[u8; 32], CoreError> {
     let params = argon2::Params::new(
         ARGON2_MEMORY_COST,
@@ -211,6 +254,60 @@ mod tests {
     fn key_storage_truncated_input_rejected() {
         let result = decrypt_key_storage("pass", &[0u8; 10]);
 
+        assert!(result.is_err());
+    }
+
+    // --- wrap_key / unwrap_key ---
+
+    #[test]
+    fn wrap_unwrap_key_roundtrip() {
+        let shared_secret = [42u8; 32];
+        let group_key = [0xABu8; 32];
+
+        let sealed = wrap_key(&group_key, &shared_secret).unwrap();
+        let recovered = unwrap_key(&sealed, &shared_secret).unwrap();
+
+        assert_eq!(recovered, group_key);
+    }
+
+    #[test]
+    fn unwrap_key_wrong_secret_fails() {
+        let secret_a = [1u8; 32];
+        let secret_b = [2u8; 32];
+        let group_key = [0xABu8; 32];
+
+        let sealed = wrap_key(&group_key, &secret_a).unwrap();
+        let result = unwrap_key(&sealed, &secret_b);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn wrap_key_output_contains_nonce() {
+        let shared_secret = [42u8; 32];
+        let group_key = [0xABu8; 32];
+
+        let sealed = wrap_key(&group_key, &shared_secret).unwrap();
+        // nonce(24) + ciphertext(32 + 16 tag) = 72
+        assert!(sealed.len() >= 24 + 16);
+    }
+
+    #[test]
+    fn wrap_key_nonce_is_random() {
+        let shared_secret = [42u8; 32];
+        let group_key = [0xABu8; 32];
+
+        let sealed_1 = wrap_key(&group_key, &shared_secret).unwrap();
+        let sealed_2 = wrap_key(&group_key, &shared_secret).unwrap();
+
+        // Nonces (first 24 bytes) must differ
+        assert_ne!(&sealed_1[..24], &sealed_2[..24]);
+    }
+
+    #[test]
+    fn unwrap_key_truncated_input_rejected() {
+        let shared_secret = [42u8; 32];
+        let result = unwrap_key(&[0u8; 10], &shared_secret);
         assert!(result.is_err());
     }
 

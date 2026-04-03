@@ -1,7 +1,8 @@
 use tauri::{AppHandle, Emitter};
 
 use crate::types::{
-    DeliveryAck, MemberEvent, MessageInfo, NetworkStatus, PeerEvent, SyncComplete, SyncProgress,
+    ChatJoinComplete, DeliveryAck, MemberEvent, MessageInfo, NetworkStatus, PeerEvent,
+    SyncComplete, SyncProgress,
 };
 
 pub fn emit_message_new(app: &AppHandle, message: &MessageInfo) -> Result<(), String> {
@@ -47,4 +48,12 @@ pub fn emit_chat_member_joined(app: &AppHandle, event: &MemberEvent) -> Result<(
 pub fn emit_chat_member_left(app: &AppHandle, event: &MemberEvent) -> Result<(), String> {
     app.emit("chat:member_left", event)
         .map_err(|e| format!("failed to emit chat:member_left: {e}"))
+}
+
+pub fn emit_chat_join_complete(
+    app: &AppHandle,
+    event: &ChatJoinComplete,
+) -> Result<(), String> {
+    app.emit("chat:join_complete", event)
+        .map_err(|e| format!("failed to emit chat:join_complete: {e}"))
 }

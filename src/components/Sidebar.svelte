@@ -69,7 +69,7 @@
         onclick={() => onSelectChat(chat.chat_id)}
       >
         <div class="chat-item-top">
-          <span class="chat-name truncate">{chat.chat_name}</span>
+          <span class="chat-name truncate">{chat.chat_name}{#if chat.pending_key_exchange}<span class="pending-badge" title="Waiting for group key"> [pending]</span>{/if}</span>
           <span class="chat-time mono">{formatTimestamp(chat.last_message_at)}</span>
         </div>
         <div class="chat-item-bottom">
@@ -224,6 +224,13 @@
   .member-count {
     font-size: 11px;
     color: var(--text-muted);
+  }
+
+  .pending-badge {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-muted);
+    font-style: italic;
   }
 
   .unread-badge {

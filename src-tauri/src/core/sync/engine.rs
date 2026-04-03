@@ -1,5 +1,11 @@
+use crate::crypto::encrypt::{
+    decrypt_key_storage, encrypt_key_storage, unwrap_key, wrap_key,
+};
+use crate::crypto::exchange::derive_shared_secret;
 use crate::store::Store;
-use crate::types::{ChatId, CoreError, FrontierEntry, Message, MessageId, PeerId, WireMessage};
+use crate::types::{
+    ChatId, ChatKey, ChatMember, CoreError, FrontierEntry, Message, MessageId, PeerId, WireMessage,
+};
 
 use super::frontier::{compute_diff_messages, merge_frontiers};
 use super::lamport::LamportClock;
@@ -97,6 +103,118 @@ impl SyncEngine {
         if store.get_message(&message.message_id)?.is_none() {
             store.insert_message(&message)?;
         }
+
+        Ok(())
+    }
+
+    /// Owner-side: handles an incoming JoinRequest from a joiner.
+    ///
+    /// Decrypts the group key with the owner's password, wraps it
+    /// with the DH shared secret derived from (owner_sk, joiner_pk),
+    /// and returns a JoinResponse with the sealed key, members, and
+    /// recent messages.
+    pub fn handle_join_request(
+        store: &Store,
+        chat_id: &ChatId,
+        joiner_peer_id: &PeerId,
+        joiner_exchange_pk: &[u8; 32],
+        owner_exchange_sk: &[u8; 32],
+        owner_password: &str,
+    ) -> Result<WireMessage, CoreError> {
+        let chat = store
+            .get_chat(chat_id)?
+            .ok_or_else(|| CoreError::NotFound("chat not found".to_string()))?;
+
+        // Verify joiner is a known member
+        let members = store.get_chat_members(chat_id)?;
+        let is_member = members.iter().any(|m| m.peer_id == *joiner_peer_id && !m.is_removed);
+        if !is_member {
+            return Ok(WireMessage::JoinResponse {
+                accepted: false,
+                group_key_enc: None,
+                members: Vec::new(),
+                recent_messages: Vec::new(),
+            });
+        }
+
+        // Decrypt group key
+        let chat_key = store
+            .get_latest_chat_key(chat_id)?
+            .ok_or_else(|| CoreError::NotFound("no group key for chat".to_string()))?;
+        let raw_group_key =
+            decrypt_key_storage(owner_password, &chat_key.group_key_enc)?;
+
+        // Derive DH shared secret and wrap the group key
+        let shared_secret =
+            derive_shared_secret(owner_exchange_sk, joiner_exchange_pk)?;
+        let sealed_group_key = wrap_key(&raw_group_key, &shared_secret)?;
+
+        // Gather recent messages (last 50)
+        let recent_messages = store.get_messages(chat_id, None, 50)?;
+
+        Ok(WireMessage::JoinResponse {
+            accepted: true,
+            group_key_enc: Some(sealed_group_key),
+            members,
+            recent_messages,
+        })
+    }
+
+    /// Joiner-side: processes the JoinResponse received from the owner.
+    ///
+    /// Unwraps the sealed group key using the DH shared secret,
+    /// re-encrypts it with the joiner's own password for local storage,
+    /// saves the chat key, members, and recent messages.
+    pub fn handle_join_response(
+        store: &Store,
+        chat_id: &ChatId,
+        sealed_group_key: &[u8],
+        members: &[ChatMember],
+        recent_messages: &[Message],
+        joiner_exchange_sk: &[u8; 32],
+        owner_exchange_pk: &[u8; 32],
+        joiner_password: &str,
+    ) -> Result<(), CoreError> {
+        // Derive DH shared secret and unwrap the group key
+        let shared_secret =
+            derive_shared_secret(joiner_exchange_sk, owner_exchange_pk)?;
+        let raw_group_key = unwrap_key(sealed_group_key, &shared_secret)?;
+
+        // Re-encrypt with joiner's own password for local storage
+        let local_group_key_enc =
+            encrypt_key_storage(joiner_password, &raw_group_key)?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| CoreError::Sync("system clock before unix epoch".to_string()))?
+            .as_secs();
+
+        store.insert_chat_key(&ChatKey {
+            chat_id: *chat_id,
+            key_epoch: 0,
+            group_key_enc: local_group_key_enc,
+            created_at: now,
+        })?;
+
+        // Upsert members (skip duplicates)
+        let existing_members = store.get_chat_members(chat_id)?;
+        let existing_peer_ids: std::collections::HashSet<_> =
+            existing_members.iter().map(|m| m.peer_id).collect();
+        for member in members {
+            if !existing_peer_ids.contains(&member.peer_id) {
+                store.insert_chat_member(member)?;
+            }
+        }
+
+        // Insert recent messages (skip duplicates)
+        for message in recent_messages {
+            if store.get_message(&message.message_id)?.is_none() {
+                store.insert_message(message)?;
+            }
+        }
+
+        // Mark join as complete
+        store.update_pending_join_complete(chat_id)?;
 
         Ok(())
     }
@@ -605,5 +723,345 @@ mod tests {
             }
             _ => panic!("expected SyncResponse"),
         }
+    }
+
+    // --- handle_join_request / handle_join_response ---
+
+    use crate::crypto::encrypt::encrypt_key_storage;
+    use crate::crypto::identity::generate_exchange_keypair;
+    use crate::types::{ChatKey, ChatMember, MemberRole};
+
+    #[test]
+    fn handle_join_request_valid_member() {
+        let store = test_store();
+        setup_chat(&store);
+
+        let group_key_raw = [0x42u8; 32];
+        let group_key_enc = encrypt_key_storage("owner-pass", &group_key_raw).unwrap();
+        store
+            .insert_chat_key(&ChatKey {
+                chat_id: chat_id(),
+                key_epoch: 0,
+                group_key_enc,
+                created_at: 1000,
+            })
+            .unwrap();
+
+        let joiner_peer = peer_b();
+        let owner_kp = generate_exchange_keypair();
+        let joiner_kp = generate_exchange_keypair();
+
+        // Add joiner as member
+        store
+            .insert_chat_member(&ChatMember {
+                chat_id: chat_id(),
+                peer_id: joiner_peer,
+                signing_pk: [0x10; 32],
+                exchange_pk: joiner_kp.public,
+                display_name: "joiner".to_string(),
+                role: MemberRole::Member,
+                added_at: 2000,
+                added_by: peer_a(),
+                is_removed: false,
+            })
+            .unwrap();
+
+        let response = SyncEngine::handle_join_request(
+            &store,
+            &chat_id(),
+            &joiner_peer,
+            &joiner_kp.public,
+            &owner_kp.secret,
+            "owner-pass",
+        )
+        .unwrap();
+
+        match response {
+            WireMessage::JoinResponse {
+                accepted,
+                group_key_enc,
+                members,
+                ..
+            } => {
+                assert!(accepted);
+                assert!(group_key_enc.is_some());
+                assert!(!members.is_empty());
+            }
+            _ => panic!("expected JoinResponse"),
+        }
+    }
+
+    #[test]
+    fn handle_join_request_unknown_peer_rejected() {
+        let store = test_store();
+        setup_chat(&store);
+
+        let group_key_enc = encrypt_key_storage("owner-pass", &[0x42u8; 32]).unwrap();
+        store
+            .insert_chat_key(&ChatKey {
+                chat_id: chat_id(),
+                key_epoch: 0,
+                group_key_enc,
+                created_at: 1000,
+            })
+            .unwrap();
+
+        let owner_kp = generate_exchange_keypair();
+        let joiner_kp = generate_exchange_keypair();
+        let unknown_peer = [0xFF; 16];
+
+        let response = SyncEngine::handle_join_request(
+            &store,
+            &chat_id(),
+            &unknown_peer,
+            &joiner_kp.public,
+            &owner_kp.secret,
+            "owner-pass",
+        )
+        .unwrap();
+
+        match response {
+            WireMessage::JoinResponse { accepted, group_key_enc, .. } => {
+                assert!(!accepted);
+                assert!(group_key_enc.is_none());
+            }
+            _ => panic!("expected JoinResponse"),
+        }
+    }
+
+    #[test]
+    fn handle_join_response_decrypts_and_stores() {
+        // Setup owner store to generate a sealed group key
+        let owner_store = test_store();
+        setup_chat(&owner_store);
+
+        let group_key_raw = [0x42u8; 32];
+        let group_key_enc = encrypt_key_storage("owner-pass", &group_key_raw).unwrap();
+        owner_store
+            .insert_chat_key(&ChatKey {
+                chat_id: chat_id(),
+                key_epoch: 0,
+                group_key_enc,
+                created_at: 1000,
+            })
+            .unwrap();
+
+        let owner_kp = generate_exchange_keypair();
+        let joiner_kp = generate_exchange_keypair();
+        let joiner_peer = peer_b();
+
+        // Add joiner to owner's store
+        owner_store
+            .insert_chat_member(&ChatMember {
+                chat_id: chat_id(),
+                peer_id: joiner_peer,
+                signing_pk: [0x10; 32],
+                exchange_pk: joiner_kp.public,
+                display_name: "joiner".to_string(),
+                role: MemberRole::Member,
+                added_at: 2000,
+                added_by: peer_a(),
+                is_removed: false,
+            })
+            .unwrap();
+
+        // Owner handles JoinRequest
+        let response = SyncEngine::handle_join_request(
+            &owner_store,
+            &chat_id(),
+            &joiner_peer,
+            &joiner_kp.public,
+            &owner_kp.secret,
+            "owner-pass",
+        )
+        .unwrap();
+
+        let (sealed_key, members, recent_messages) = match response {
+            WireMessage::JoinResponse {
+                group_key_enc: Some(key),
+                members,
+                recent_messages,
+                ..
+            } => (key, members, recent_messages),
+            _ => panic!("expected accepted JoinResponse"),
+        };
+
+        // Setup joiner store
+        let joiner_store = test_store();
+        setup_chat(&joiner_store);
+        joiner_store
+            .insert_pending_join(&chat_id(), &[0xAB; 32])
+            .unwrap();
+
+        // Joiner handles JoinResponse
+        SyncEngine::handle_join_response(
+            &joiner_store,
+            &chat_id(),
+            &sealed_key,
+            &members,
+            &recent_messages,
+            &joiner_kp.secret,
+            &owner_kp.public,
+            "joiner-pass",
+        )
+        .unwrap();
+
+        // Verify group key was stored
+        let stored_key = joiner_store
+            .get_latest_chat_key(&chat_id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored_key.key_epoch, 0);
+
+        // Verify the stored key decrypts to the original group key
+        let decrypted = crate::crypto::encrypt::decrypt_key_storage(
+            "joiner-pass",
+            &stored_key.group_key_enc,
+        )
+        .unwrap();
+        assert_eq!(decrypted.as_slice(), &group_key_raw);
+
+        // Verify pending join was completed
+        let pending = joiner_store.get_pending_join(&chat_id()).unwrap().unwrap();
+        assert!(!pending.pending);
+    }
+
+    #[test]
+    fn handle_join_response_wrong_dh_key_fails() {
+        let owner_kp = generate_exchange_keypair();
+        let joiner_kp = generate_exchange_keypair();
+        let wrong_kp = generate_exchange_keypair();
+
+        // Wrap with owner's real secret + joiner's real public
+        let shared = crate::crypto::exchange::derive_shared_secret(
+            &owner_kp.secret,
+            &joiner_kp.public,
+        )
+        .unwrap();
+        let sealed = crate::crypto::encrypt::wrap_key(&[0x42u8; 32], &shared).unwrap();
+
+        let joiner_store = test_store();
+        setup_chat(&joiner_store);
+        joiner_store
+            .insert_pending_join(&chat_id(), &[0xAB; 32])
+            .unwrap();
+
+        // Try to unwrap with wrong owner public key
+        let result = SyncEngine::handle_join_response(
+            &joiner_store,
+            &chat_id(),
+            &sealed,
+            &[],
+            &[],
+            &joiner_kp.secret,
+            &wrong_kp.public, // wrong key
+            "joiner-pass",
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_full_join_cycle_with_real_dh_keys() {
+        // Owner setup: store with chat, group key, identity
+        let owner_store = test_store();
+        setup_chat(&owner_store);
+
+        let group_key_raw = [0x77u8; 32];
+        let owner_password = "owner-secure-pass";
+        let joiner_password = "joiner-secure-pass";
+
+        let group_key_enc = encrypt_key_storage(owner_password, &group_key_raw).unwrap();
+        owner_store
+            .insert_chat_key(&ChatKey {
+                chat_id: chat_id(),
+                key_epoch: 0,
+                group_key_enc,
+                created_at: 1000,
+            })
+            .unwrap();
+
+        // Generate real X25519 keypairs for owner and joiner
+        let owner_kp = generate_exchange_keypair();
+        let joiner_kp = generate_exchange_keypair();
+        let joiner_peer = peer_b();
+
+        // Register joiner as a member in the owner's store
+        owner_store
+            .insert_chat_member(&ChatMember {
+                chat_id: chat_id(),
+                peer_id: joiner_peer,
+                signing_pk: [0x30; 32],
+                exchange_pk: joiner_kp.public,
+                display_name: "joiner-node".to_string(),
+                role: MemberRole::Member,
+                added_at: 2000,
+                added_by: peer_a(),
+                is_removed: false,
+            })
+            .unwrap();
+
+        // Owner handles JoinRequest → produces JoinResponse
+        let response = SyncEngine::handle_join_request(
+            &owner_store,
+            &chat_id(),
+            &joiner_peer,
+            &joiner_kp.public,
+            &owner_kp.secret,
+            owner_password,
+        )
+        .unwrap();
+
+        let (sealed_key, members, recent_messages) = match response {
+            WireMessage::JoinResponse {
+                accepted: true,
+                group_key_enc: Some(key),
+                members,
+                recent_messages,
+            } => (key, members, recent_messages),
+            _ => panic!("expected accepted JoinResponse with group key"),
+        };
+
+        // Joiner setup: store with chat and pending join
+        let joiner_store = test_store();
+        setup_chat(&joiner_store);
+        joiner_store
+            .insert_pending_join(&chat_id(), &[0xCD; 32])
+            .unwrap();
+
+        // Joiner handles JoinResponse
+        SyncEngine::handle_join_response(
+            &joiner_store,
+            &chat_id(),
+            &sealed_key,
+            &members,
+            &recent_messages,
+            &joiner_kp.secret,
+            &owner_kp.public,
+            joiner_password,
+        )
+        .unwrap();
+
+        // Assert: joiner has a chat_key in DB
+        let stored_key = joiner_store
+            .get_latest_chat_key(&chat_id())
+            .unwrap()
+            .expect("joiner must have chat_key after join");
+        assert_eq!(stored_key.key_epoch, 0);
+
+        // Assert: pending_join is marked complete
+        let pending = joiner_store
+            .get_pending_join(&chat_id())
+            .unwrap()
+            .expect("pending_join record must exist");
+        assert!(!pending.pending, "pending_join must be marked complete");
+
+        // Assert: joiner can decrypt the group key with their own password
+        let decrypted = decrypt_key_storage(joiner_password, &stored_key.group_key_enc).unwrap();
+        assert_eq!(
+            decrypted.as_slice(),
+            &group_key_raw,
+            "decrypted group key must match original"
+        );
     }
 }

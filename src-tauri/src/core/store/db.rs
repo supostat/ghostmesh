@@ -130,6 +130,14 @@ fn init_schema(connection: &Connection) -> Result<(), CoreError> {
 
             CREATE INDEX IF NOT EXISTS idx_sync_log_ts
                 ON sync_log(timestamp DESC);
+
+            CREATE TABLE IF NOT EXISTS pending_joins (
+                chat_id       BLOB PRIMARY KEY,
+                invite_token  BLOB NOT NULL,
+                pending       INTEGER NOT NULL DEFAULT 1,
+                retry_count   INTEGER NOT NULL DEFAULT 0,
+                received_at   INTEGER
+            );
             ",
         )
         .map_err(|e| CoreError::Store(format!("failed to create schema: {e}")))?;
@@ -162,6 +170,7 @@ mod tests {
             "outbox",
             "peer_addresses",
             "sync_log",
+            "pending_joins",
         ];
 
         for table_name in &expected_tables {

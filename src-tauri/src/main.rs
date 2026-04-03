@@ -2,6 +2,7 @@
 
 mod commands;
 mod events;
+mod join_orchestrator;
 mod state;
 mod types;
 
@@ -45,9 +46,15 @@ fn main() {
                 lamport: Mutex::new(LamportClock::new()),
                 peer_manager: Mutex::new(PeerManager::new()),
                 settings: Mutex::new(Settings::default()),
+                session_password: Mutex::new(None),
             };
 
             app.manage(app_state);
+
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                join_orchestrator::run_join_orchestrator(handle).await;
+            });
 
             Ok(())
         })

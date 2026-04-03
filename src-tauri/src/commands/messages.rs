@@ -33,6 +33,16 @@ pub async fn send_message(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| CoreError::IdentityNotInitialized.to_string())?;
 
+    // Check if chat is pending key exchange
+    let pending = store
+        .get_pending_join(&chat_id_bytes)
+        .map_err(|e| e.to_string())?;
+    if pending.map(|pj| pj.pending).unwrap_or(false) {
+        return Err(
+            "chat is pending key exchange — waiting for owner to share the group key".to_string(),
+        );
+    }
+
     // Get the latest group key and decrypt it
     let chat_key = store
         .get_latest_chat_key(&chat_id_bytes)

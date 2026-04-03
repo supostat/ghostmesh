@@ -8,12 +8,14 @@
   let {
     chatId,
     password,
+    pendingKeyExchange = false,
     onSelectMessage,
     onToggleInspector,
     onGenerateInvite,
   }: {
     chatId: string;
     password: string;
+    pendingKeyExchange?: boolean;
     onSelectMessage: (messageId: string) => void;
     onToggleInspector: () => void;
     onGenerateInvite: () => void;
@@ -111,23 +113,29 @@
     <div class="send-error text-error text-small">{sendError}</div>
   {/if}
 
-  <div class="message-input-bar">
-    <textarea
-      class="message-input"
-      placeholder="Type a message..."
-      bind:value={inputText}
-      onkeydown={handleKeydown}
-      disabled={sending}
-      rows={1}
-    ></textarea>
-    <button
-      class="send-btn primary"
-      onclick={handleSend}
-      disabled={!inputText.trim() || sending}
-    >
-      {sending ? "..." : "Send"}
-    </button>
-  </div>
+  {#if pendingKeyExchange}
+    <div class="pending-key-banner">
+      <span class="text-muted text-small">Waiting for the chat owner to share the group key...</span>
+    </div>
+  {:else}
+    <div class="message-input-bar">
+      <textarea
+        class="message-input"
+        placeholder="Type a message..."
+        bind:value={inputText}
+        onkeydown={handleKeydown}
+        disabled={sending}
+        rows={1}
+      ></textarea>
+      <button
+        class="send-btn primary"
+        onclick={handleSend}
+        disabled={!inputText.trim() || sending}
+      >
+        {sending ? "..." : "Send"}
+      </button>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -227,5 +235,15 @@
   .send-btn {
     align-self: flex-end;
     min-width: 64px;
+  }
+
+  .pending-key-banner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-secondary);
+    flex-shrink: 0;
   }
 </style>

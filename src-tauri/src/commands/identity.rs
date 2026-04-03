@@ -48,6 +48,10 @@ pub async fn create_identity(
             identity.created_at,
         )
         .map_err(|e| e.to_string())?;
+    drop(store);
+
+    let mut session_pw = state.session_password.lock().map_err(|e| e.to_string())?;
+    *session_pw = Some(password);
 
     Ok(IdentityInfo {
         peer_id: hex::encode(identity.peer_id),
@@ -80,7 +84,11 @@ pub async fn validate_password(
         .ok_or_else(|| CoreError::IdentityNotInitialized.to_string())?;
 
     match decrypt_key_storage(&password, &stored.signing_sk_enc) {
-        Ok(bytes) if bytes.len() == 64 => Ok(true),
+        Ok(bytes) if bytes.len() == 64 => {
+            let mut session_pw = state.session_password.lock().map_err(|e| e.to_string())?;
+            *session_pw = Some(password);
+            Ok(true)
+        }
         _ => Ok(false),
     }
 }

@@ -79,6 +79,7 @@ pub async fn create_chat(
         last_message_preview: None,
         last_message_at: None,
         unread_count: 0,
+        pending_key_exchange: false,
     })
 }
 
@@ -100,6 +101,12 @@ pub async fn list_chats(state: State<'_, AppState>) -> Result<Vec<ChatInfo>, Str
             .filter(|m| peer_manager.is_connected(&m.peer_id))
             .count() as u32;
 
+        let pending_key_exchange = store
+            .get_pending_join(&chat.chat_id)
+            .map_err(|e| e.to_string())?
+            .map(|pj| pj.pending)
+            .unwrap_or(false);
+
         result.push(ChatInfo {
             chat_id: hex::encode(chat.chat_id),
             chat_name: chat.chat_name.clone(),
@@ -110,6 +117,7 @@ pub async fn list_chats(state: State<'_, AppState>) -> Result<Vec<ChatInfo>, Str
             last_message_preview: None,
             last_message_at: None,
             unread_count: 0,
+            pending_key_exchange,
         });
     }
 
@@ -291,6 +299,11 @@ pub async fn join_chat(
             .map_err(|e| e.to_string())?;
     }
 
+    // Mark as pending key exchange — group key will arrive via JoinResponse
+    store
+        .insert_pending_join(&invite.chat_id, &invite.invite_token)
+        .map_err(|e| e.to_string())?;
+
     Ok(ChatInfo {
         chat_id: hex::encode(invite.chat_id),
         chat_name: invite.chat_name,
@@ -301,6 +314,7 @@ pub async fn join_chat(
         last_message_preview: None,
         last_message_at: None,
         unread_count: 0,
+        pending_key_exchange: true,
     })
 }
 

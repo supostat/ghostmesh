@@ -21,6 +21,7 @@ pub struct ChatInfo {
     pub last_message_preview: Option<String>,
     pub last_message_at: Option<u64>,
     pub unread_count: u32,
+    pub pending_key_exchange: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,4 +163,10 @@ pub struct MemberEvent {
 pub struct KeyRotationEvent {
     pub chat_id: String,
     pub new_key_epoch: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatJoinComplete {
+    pub chat_id: String,
+    pub chat_name: String,
 }

@@ -228,6 +228,17 @@ pub struct PeerIdentityPacket {
     pub display_name: String,
 }
 
+// --- Pending Join ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinPending {
+    pub chat_id: ChatId,
+    pub invite_token: InviteToken,
+    pub pending: bool,
+    pub retry_count: u32,
+    pub received_at: u64,
+}
+
 // --- Invite ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

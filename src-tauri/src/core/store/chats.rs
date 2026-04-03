@@ -1,4 +1,4 @@
-use crate::types::{Chat, ChatId, ChatKey, ChatMember, CoreError, MemberRole, PeerId};
+use crate::types::{Chat, ChatId, ChatKey, ChatMember, CoreError, InviteToken, JoinPending, MemberRole, PeerId};
 
 use super::db::Store;
 
@@ -242,6 +242,153 @@ impl Store {
             None => Ok(None),
         }
     }
+    // --- Pending Joins ---
+
+    pub fn insert_pending_join(
+        &self,
+        chat_id: &ChatId,
+        invite_token: &InviteToken,
+    ) -> Result<(), CoreError> {
+        self.connection()
+            .execute(
+                "INSERT INTO pending_joins (chat_id, invite_token, pending, retry_count)
+                 VALUES (?1, ?2, 1, 0)",
+                rusqlite::params![chat_id.as_slice(), invite_token.as_slice()],
+            )
+            .map_err(|e| CoreError::Store(format!("failed to insert pending join: {e}")))?;
+        Ok(())
+    }
+
+    pub fn get_pending_join(
+        &self,
+        chat_id: &ChatId,
+    ) -> Result<Option<JoinPending>, CoreError> {
+        let mut statement = self
+            .connection()
+            .prepare(
+                "SELECT chat_id, invite_token, pending, retry_count, received_at
+                 FROM pending_joins WHERE chat_id = ?1",
+            )
+            .map_err(|e| CoreError::Store(format!("failed to prepare get_pending_join: {e}")))?;
+
+        let mut rows = statement
+            .query_map([chat_id.as_slice()], |row| {
+                Ok(JoinPending {
+                    chat_id: blob_to_chat_id(row.get::<_, Vec<u8>>(0)?),
+                    invite_token: blob_to_invite_token(row.get::<_, Vec<u8>>(1)?),
+                    pending: row.get::<_, i32>(2)? != 0,
+                    retry_count: row.get::<_, u32>(3)?,
+                    received_at: row.get::<_, Option<u64>>(4)?.unwrap_or(0),
+                })
+            })
+            .map_err(|e| CoreError::Store(format!("failed to query pending join: {e}")))?;
+
+        match rows.next() {
+            Some(row) => Ok(Some(
+                row.map_err(|e| CoreError::Store(format!("failed to read pending join row: {e}")))?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_pending_joins_for_owner(
+        &self,
+        owner_peer_id: &PeerId,
+    ) -> Result<Vec<JoinPending>, CoreError> {
+        let mut statement = self
+            .connection()
+            .prepare(
+                "SELECT pj.chat_id, pj.invite_token, pj.pending, pj.retry_count, pj.received_at
+                 FROM pending_joins pj
+                 JOIN chats c ON c.chat_id = pj.chat_id
+                 WHERE c.owner_peer_id = ?1 AND pj.pending = 1",
+            )
+            .map_err(|e| {
+                CoreError::Store(format!("failed to prepare get_pending_joins_for_owner: {e}"))
+            })?;
+
+        let rows = statement
+            .query_map([owner_peer_id.as_slice()], |row| {
+                Ok(JoinPending {
+                    chat_id: blob_to_chat_id(row.get::<_, Vec<u8>>(0)?),
+                    invite_token: blob_to_invite_token(row.get::<_, Vec<u8>>(1)?),
+                    pending: row.get::<_, i32>(2)? != 0,
+                    retry_count: row.get::<_, u32>(3)?,
+                    received_at: row.get::<_, Option<u64>>(4)?.unwrap_or(0),
+                })
+            })
+            .map_err(|e| {
+                CoreError::Store(format!("failed to query pending joins for owner: {e}"))
+            })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(
+                row.map_err(|e| {
+                    CoreError::Store(format!("failed to read pending join row: {e}"))
+                })?,
+            );
+        }
+        Ok(results)
+    }
+
+    pub fn update_pending_join_complete(
+        &self,
+        chat_id: &ChatId,
+    ) -> Result<(), CoreError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| CoreError::Store("system clock before unix epoch".to_string()))?
+            .as_secs();
+
+        let affected = self
+            .connection()
+            .execute(
+                "UPDATE pending_joins SET pending = 0, received_at = ?1 WHERE chat_id = ?2",
+                rusqlite::params![now, chat_id.as_slice()],
+            )
+            .map_err(|e| CoreError::Store(format!("failed to update pending join: {e}")))?;
+
+        if affected == 0 {
+            return Err(CoreError::NotFound(
+                "pending join not found".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn delete_pending_join(
+        &self,
+        chat_id: &ChatId,
+    ) -> Result<(), CoreError> {
+        self.connection()
+            .execute(
+                "DELETE FROM pending_joins WHERE chat_id = ?1",
+                [chat_id.as_slice()],
+            )
+            .map_err(|e| CoreError::Store(format!("failed to delete pending join: {e}")))?;
+        Ok(())
+    }
+
+    pub fn increment_pending_join_retry(
+        &self,
+        chat_id: &ChatId,
+    ) -> Result<(), CoreError> {
+        self.connection()
+            .execute(
+                "UPDATE pending_joins SET retry_count = retry_count + 1 WHERE chat_id = ?1",
+                [chat_id.as_slice()],
+            )
+            .map_err(|e| CoreError::Store(format!("failed to increment pending join retry: {e}")))?;
+        Ok(())
+    }
+}
+
+fn blob_to_invite_token(blob: Vec<u8>) -> InviteToken {
+    let mut token = [0u8; 32];
+    let len = blob.len().min(32);
+    token[..len].copy_from_slice(&blob[..len]);
+    token
 }
 
 fn blob_to_peer_id(blob: Vec<u8>) -> PeerId {
@@ -502,6 +649,124 @@ mod tests {
         assert!(result.is_none());
     }
 
+    // --- Pending Joins ---
+
+    #[test]
+    fn insert_and_get_pending_join() {
+        let store = test_store();
+        store.insert_chat(&sample_chat()).unwrap();
+
+        let token = [0xABu8; 32];
+        store.insert_pending_join(&sample_chat_id(), &token).unwrap();
+
+        let loaded = store.get_pending_join(&sample_chat_id()).unwrap().unwrap();
+        assert_eq!(loaded.chat_id, sample_chat_id());
+        assert_eq!(loaded.invite_token, token);
+        assert!(loaded.pending);
+        assert_eq!(loaded.retry_count, 0);
+    }
+
+    #[test]
+    fn get_pending_join_returns_none_when_missing() {
+        let store = test_store();
+        let result = store.get_pending_join(&[99u8; 16]).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn get_pending_joins_filters_by_owner() {
+        let store = test_store();
+
+        let owner_a = [0xAAu8; 16];
+        let owner_b = [0xBBu8; 16];
+
+        let chat_a = Chat {
+            chat_id: [1u8; 16],
+            chat_name: "chat-a".to_string(),
+            owner_peer_id: owner_a,
+            created_at: 1000,
+            my_lamport_counter: 0,
+        };
+        let chat_b = Chat {
+            chat_id: [2u8; 16],
+            chat_name: "chat-b".to_string(),
+            owner_peer_id: owner_b,
+            created_at: 2000,
+            my_lamport_counter: 0,
+        };
+
+        store.insert_chat(&chat_a).unwrap();
+        store.insert_chat(&chat_b).unwrap();
+
+        store.insert_pending_join(&chat_a.chat_id, &[0x11; 32]).unwrap();
+        store.insert_pending_join(&chat_b.chat_id, &[0x22; 32]).unwrap();
+
+        let joins_a = store.get_pending_joins_for_owner(&owner_a).unwrap();
+        assert_eq!(joins_a.len(), 1);
+        assert_eq!(joins_a[0].chat_id, chat_a.chat_id);
+
+        let joins_b = store.get_pending_joins_for_owner(&owner_b).unwrap();
+        assert_eq!(joins_b.len(), 1);
+        assert_eq!(joins_b[0].chat_id, chat_b.chat_id);
+    }
+
+    #[test]
+    fn update_pending_join_complete() {
+        let store = test_store();
+        store.insert_chat(&sample_chat()).unwrap();
+
+        store.insert_pending_join(&sample_chat_id(), &[0xAB; 32]).unwrap();
+        store.update_pending_join_complete(&sample_chat_id()).unwrap();
+
+        let loaded = store.get_pending_join(&sample_chat_id()).unwrap().unwrap();
+        assert!(!loaded.pending);
+        assert!(loaded.received_at > 0);
+    }
+
+    #[test]
+    fn update_pending_join_complete_returns_not_found() {
+        let store = test_store();
+        let result = store.update_pending_join_complete(&[99u8; 16]);
+        assert!(matches!(result, Err(CoreError::NotFound(_))));
+    }
+
+    #[test]
+    fn delete_pending_join_removes_entry() {
+        let store = test_store();
+        store.insert_chat(&sample_chat()).unwrap();
+
+        store.insert_pending_join(&sample_chat_id(), &[0xAB; 32]).unwrap();
+        store.delete_pending_join(&sample_chat_id()).unwrap();
+
+        let loaded = store.get_pending_join(&sample_chat_id()).unwrap();
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn get_pending_joins_for_owner_excludes_completed() {
+        let store = test_store();
+        store.insert_chat(&sample_chat()).unwrap();
+
+        store.insert_pending_join(&sample_chat_id(), &[0xAB; 32]).unwrap();
+        store.update_pending_join_complete(&sample_chat_id()).unwrap();
+
+        let joins = store.get_pending_joins_for_owner(&sample_peer_id()).unwrap();
+        assert!(joins.is_empty());
+    }
+
+    #[test]
+    fn increment_pending_join_retry() {
+        let store = test_store();
+        store.insert_chat(&sample_chat()).unwrap();
+
+        store.insert_pending_join(&sample_chat_id(), &[0xAB; 32]).unwrap();
+        store.increment_pending_join_retry(&sample_chat_id()).unwrap();
+        store.increment_pending_join_retry(&sample_chat_id()).unwrap();
+
+        let loaded = store.get_pending_join(&sample_chat_id()).unwrap().unwrap();
+        assert_eq!(loaded.retry_count, 2);
+    }
+
     #[test]
     fn insert_duplicate_chat_key_fails() {
         let store = test_store();
@@ -516,5 +781,27 @@ mod tests {
         store.insert_chat_key(&key).unwrap();
         let result = store.insert_chat_key(&key);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn pending_join_blocks_key_retrieval() {
+        let store = test_store();
+        store.insert_chat(&sample_chat()).unwrap();
+
+        // Create a pending join but do NOT insert any chat_key
+        store
+            .insert_pending_join(&sample_chat_id(), &[0xAB; 32])
+            .unwrap();
+
+        // Verify pending_join is active
+        let pending = store.get_pending_join(&sample_chat_id()).unwrap().unwrap();
+        assert!(pending.pending);
+
+        // No chat_key exists yet — this is what send_message checks before encrypting
+        let latest_key = store.get_latest_chat_key(&sample_chat_id()).unwrap();
+        assert!(
+            latest_key.is_none(),
+            "no chat_key should exist while join is pending"
+        );
     }
 }
