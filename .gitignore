@@ -29,6 +29,8 @@ Thumbs.db
 .claude/
 .mcp.json
 CLAUDE.md
+AGENT.md
+LAUNCH-PROMPT.md
 
 # dev-workflow
 .dev-vault/
