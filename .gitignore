@@ -24,3 +24,15 @@ Thumbs.db
 # Environment
 .env
 .env.*
+
+# Claude Code
+.claude/
+.mcp.json
+CLAUDE.md
+
+# dev-workflow
+.dev-vault/
+# dev-workflow (stack-detected)
+coverage/
+*.tsbuildinfo
+.turbo/
