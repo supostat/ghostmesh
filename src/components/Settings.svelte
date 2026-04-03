@@ -5,8 +5,12 @@
     addManualPeer,
     exportIdentity,
     importIdentity,
+    checkForUpdate,
+    installUpdate,
     type Settings,
+    type UpdateInfo,
   } from "../lib/api";
+  import { getVersion } from "@tauri-apps/api/app";
   import { getIdentityState } from "../lib/stores/identity.svelte";
 
   let { onClose }: { onClose: () => void } = $props();
@@ -22,6 +26,13 @@
   let peerAddError = $state<string | null>(null);
   let peerAddSuccess = $state(false);
 
+  // Updates
+  let appVersion = $state("");
+  let updateAvailable = $state<UpdateInfo | null>(null);
+  let updateChecking = $state(false);
+  let updateInstalling = $state(false);
+  let updateError = $state<string | null>(null);
+
   // Identity export/import
   let exportPassword = $state("");
   let exportData = $state("");
@@ -34,7 +45,40 @@
 
   $effect(() => {
     loadSettings();
+    loadAppVersion();
   });
+
+  async function loadAppVersion() {
+    try {
+      appVersion = await getVersion();
+    } catch {
+      appVersion = "unknown";
+    }
+  }
+
+  async function handleCheckUpdate() {
+    updateChecking = true;
+    updateError = null;
+    updateAvailable = null;
+    try {
+      updateAvailable = await checkForUpdate();
+    } catch (err) {
+      updateError = String(err);
+    } finally {
+      updateChecking = false;
+    }
+  }
+
+  async function handleInstallUpdate() {
+    updateInstalling = true;
+    updateError = null;
+    try {
+      await installUpdate();
+    } catch (err) {
+      updateError = String(err);
+      updateInstalling = false;
+    }
+  }
 
   async function loadSettings() {
     loading = true;
@@ -166,6 +210,53 @@
             bind:checked={settings.mdns_enabled}
           />
           <label for="settings-mdns">Enable mDNS Discovery</label>
+        </div>
+      </section>
+
+      <section class="section">
+        <h3 class="section-title">Updates</h3>
+        <div class="field-row">
+          <span class="field-label">Current Version</span>
+          <span class="mono text-small">{appVersion}</span>
+        </div>
+        <div class="field-inline">
+          <input
+            id="settings-auto-update"
+            type="checkbox"
+            bind:checked={settings.auto_update_enabled}
+          />
+          <label for="settings-auto-update">Check for updates on startup</label>
+        </div>
+        <div class="update-actions">
+          <button
+            onclick={handleCheckUpdate}
+            disabled={updateChecking || updateInstalling}
+          >
+            {updateChecking ? "Checking..." : "Check for Updates"}
+          </button>
+          {#if updateAvailable}
+            <div class="update-info">
+              <span class="text-success text-small">
+                Version {updateAvailable.version} available
+              </span>
+              {#if updateAvailable.body}
+                <p class="text-small text-muted update-notes">{updateAvailable.body}</p>
+              {/if}
+              <button
+                class="primary"
+                onclick={handleInstallUpdate}
+                disabled={updateInstalling}
+              >
+                {updateInstalling ? "Installing..." : "Install and Restart"}
+              </button>
+            </div>
+          {/if}
+          {#if updateAvailable === null && !updateChecking && !updateError}
+            <!-- initial state or no update found after check -->
+          {/if}
+          {#if updateError}
+            <span class="text-error text-small">{updateError}</span>
+          {/if}
         </div>
       </section>
 
@@ -366,5 +457,28 @@
     display: flex;
     align-items: center;
     gap: 12px;
+  }
+
+  .update-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .update-info {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    background: var(--bg-secondary);
+    border-radius: var(--radius);
+    width: 100%;
+  }
+
+  .update-notes {
+    white-space: pre-wrap;
+    max-height: 80px;
+    overflow-y: auto;
   }
 </style>

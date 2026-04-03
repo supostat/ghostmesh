@@ -262,6 +262,7 @@ pub struct Settings {
     pub mdns_enabled: bool,
     pub message_ttl_days: Option<u32>,
     pub theme: String,
+    pub auto_update_enabled: bool,
 }
 
 impl Default for Settings {
@@ -272,6 +273,7 @@ impl Default for Settings {
             mdns_enabled: true,
             message_ttl_days: None,
             theme: "default".to_string(),
+            auto_update_enabled: true,
         }
     }
 }

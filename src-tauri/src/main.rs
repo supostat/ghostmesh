@@ -8,7 +8,8 @@ mod types;
 
 use std::sync::Mutex;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+use tauri_plugin_updater::UpdaterExt;
 
 use ghostmesh_core::net::PeerManager;
 use ghostmesh_core::store::Store;
@@ -24,6 +25,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let app_data_dir = app
                 .path()
@@ -56,6 +58,11 @@ fn main() {
                 join_orchestrator::run_join_orchestrator(handle).await;
             });
 
+            let update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                check_for_update_on_startup(update_handle).await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -85,7 +92,48 @@ fn main() {
             // Settings (2)
             commands::settings::get_settings,
             commands::settings::update_settings,
+            // Updates (2)
+            commands::updates::check_for_update,
+            commands::updates::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+async fn check_for_update_on_startup(app: tauri::AppHandle) {
+    let auto_update_enabled = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .map(|s| s.auto_update_enabled)
+        .unwrap_or(false);
+
+    if !auto_update_enabled {
+        return;
+    }
+
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!("updater not available: {e}");
+            return;
+        }
+    };
+
+    match updater.check().await {
+        Ok(Some(update)) => {
+            tracing::info!("update available: v{}", update.version);
+            let _ = app.emit("update:available", &commands::updates::UpdateInfo {
+                version: update.version.clone(),
+                body: update.body.clone(),
+                date: update.date.map(|d| d.to_string()),
+            });
+        }
+        Ok(None) => {
+            tracing::debug!("no update available");
+        }
+        Err(e) => {
+            tracing::warn!("failed to check for updates: {e}");
+        }
+    }
 }

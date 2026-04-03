@@ -148,6 +148,13 @@ export interface Settings {
   mdns_enabled: boolean;
   message_ttl_days?: number;
   theme: string;
+  auto_update_enabled: boolean;
+}
+
+export interface UpdateInfo {
+  version: string;
+  body: string | null;
+  date: string | null;
 }
 
 // --- Identity Commands ---
@@ -266,4 +273,14 @@ export function getSettings(): Promise<Settings> {
 
 export function updateSettings(newSettings: Settings): Promise<Settings> {
   return invoke("update_settings", { newSettings });
+}
+
+// --- Update Commands ---
+
+export function checkForUpdate(): Promise<UpdateInfo | null> {
+  return invoke("check_for_update");
+}
+
+export function installUpdate(): Promise<void> {
+  return invoke("install_update");
 }

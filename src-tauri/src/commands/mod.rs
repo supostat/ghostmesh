@@ -3,3 +3,4 @@ pub mod identity;
 pub mod messages;
 pub mod network;
 pub mod settings;
+pub mod updates;
