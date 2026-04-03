@@ -67,21 +67,15 @@ jobs:
         include:
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
-            bundle-path: src-tauri/target/release/bundle/msi
-            artifact-glob: "*.msi"
-            artifact-name: ghostmesh-windows-msi
+            artifact-name: ghostmesh-windows
 
           - platform: macos-latest
             target: aarch64-apple-darwin
-            bundle-path: src-tauri/target/release/bundle/dmg
-            artifact-glob: "*.dmg"
-            artifact-name: ghostmesh-macos-dmg
+            artifact-name: ghostmesh-macos
 
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            bundle-path: src-tauri/target/release/bundle/deb
-            artifact-glob: "*.deb"
-            artifact-name: ghostmesh-linux-deb
+            artifact-name: ghostmesh-linux
 
     runs-on: ${{ matrix.platform }}
 
@@ -125,7 +119,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
-          path: ${{ matrix.bundle-path }}/${{ matrix.artifact-glob }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
   release:
