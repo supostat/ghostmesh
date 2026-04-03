@@ -44,7 +44,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "PLACEHOLDER_PUBKEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENENzg4RjdDNDZDMDFGMEUKUldRT0g4QkdmSTk0emJvZ1ZTb1Q3UG5nQkpHMUNyZUo4OXo5emN6Zkw0cFg5UWt0VGpkWU1lKzAK",
       "endpoints": [
         "https://github.com/supostat/ghostmesh/releases/latest/download/latest.json"
       ]
