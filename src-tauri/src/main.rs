@@ -4,19 +4,22 @@ mod commands;
 mod events;
 mod join_orchestrator;
 mod state;
+mod tauri_event_sink;
 mod types;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tauri::{Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
-use ghostmesh_core::net::PeerManager;
+use ghostmesh_core::crypto::noise::generate_noise_keypair;
+use ghostmesh_core::net::{NetworkService, PeerManager};
 use ghostmesh_core::store::Store;
 use ghostmesh_core::sync::LamportClock;
 use ghostmesh_core::types::Settings;
 
 use crate::state::AppState;
+use crate::tauri_event_sink::TauriEventSink;
 
 fn main() {
     tracing_subscriber::fmt::init();
@@ -49,9 +52,16 @@ fn main() {
                 peer_manager: Mutex::new(PeerManager::new()),
                 settings: Mutex::new(Settings::default()),
                 session_password: Mutex::new(None),
+                network_tx: Mutex::new(None),
             };
 
             app.manage(app_state);
+
+            let net_handle = app.handle().clone();
+            let net_db_path = db_path_str.to_string();
+            tauri::async_runtime::spawn(async move {
+                spawn_network_service(net_handle, net_db_path).await;
+            });
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -98,6 +108,73 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+async fn spawn_network_service(app: tauri::AppHandle, db_path: String) {
+    let state = app.state::<AppState>();
+
+    let store_for_net = match Store::open(&db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("network service: failed to open store: {e}");
+            return;
+        }
+    };
+
+    let identity = match store_for_net.get_identity() {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            tracing::info!("network service: no identity yet, skipping startup");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("network service: failed to load identity: {e}");
+            return;
+        }
+    };
+
+    let noise_keypair = match generate_noise_keypair() {
+        Ok(kp) => kp,
+        Err(e) => {
+            tracing::error!("network service: failed to generate noise keypair: {e}");
+            return;
+        }
+    };
+
+    let listen_port = state
+        .settings
+        .lock()
+        .map(|s| s.listen_port)
+        .unwrap_or(9473);
+
+    let bind_address = format!("0.0.0.0:{listen_port}");
+
+    let peer_manager = Arc::new(Mutex::new(PeerManager::new()));
+    let store_arc = Arc::new(Mutex::new(store_for_net));
+    let lamport_arc = Arc::new(Mutex::new(LamportClock::new()));
+    let session_password_arc = Arc::new(Mutex::new(
+        state.session_password.lock().ok().and_then(|p| p.clone()),
+    ));
+
+    let (service, command_tx) = NetworkService::new(
+        bind_address,
+        identity.peer_id,
+        noise_keypair,
+        identity.signing_pk,
+        peer_manager,
+        store_arc,
+        lamport_arc,
+        session_password_arc,
+    );
+
+    {
+        if let Ok(mut tx_guard) = state.network_tx.lock() {
+            *tx_guard = Some(command_tx);
+        }
+    }
+
+    let event_sink = Arc::new(TauriEventSink::new(app));
+    service.run(event_sink).await;
 }
 
 async fn check_for_update_on_startup(app: tauri::AppHandle) {

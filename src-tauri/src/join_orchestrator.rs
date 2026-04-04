@@ -54,15 +54,50 @@ fn check_pending_joins(app: &AppHandle) -> Result<(), String> {
             continue;
         }
 
-        // Owner is online — increment retry counter.
-        // The actual wire JoinRequest will be sent once transport
-        // message routing is implemented.
+        // Owner is online — send JoinRequest via network layer
+        let identity = match store.get_identity().map_err(|e| e.to_string())? {
+            Some(id) => id,
+            None => continue,
+        };
+
+        let network_tx_guard = state.network_tx.lock().map_err(|e| e.to_string())?;
+        if let Some(network_tx) = network_tx_guard.as_ref() {
+            use ghostmesh_core::net::NetworkCommand;
+            use ghostmesh_core::types::{PeerIdentityPacket, WireMessage};
+
+            let join_request = WireMessage::JoinRequest {
+                chat_id: chat.chat_id,
+                invite_token: pending_join.invite_token,
+                identity: PeerIdentityPacket {
+                    peer_id: identity.peer_id,
+                    signing_pk: identity.signing_pk,
+                    exchange_pk: identity.exchange_pk,
+                    display_name: identity.display_name.clone(),
+                },
+            };
+
+            let tx = network_tx.clone();
+            drop(network_tx_guard);
+
+            if let Err(error) = tx.try_send(NetworkCommand::SendMessage {
+                peer_id: chat.owner_peer_id,
+                message: join_request,
+            }) {
+                tracing::warn!(
+                    "join orchestrator: failed to send JoinRequest for chat {}: {error}",
+                    hex::encode(chat.chat_id),
+                );
+            }
+        } else {
+            drop(network_tx_guard);
+        }
+
         store
             .increment_pending_join_retry(&chat.chat_id)
             .map_err(|e| e.to_string())?;
 
         tracing::info!(
-            "join orchestrator: owner of chat {} is online, join request pending (retry {})",
+            "join orchestrator: sent JoinRequest for chat {} (retry {})",
             hex::encode(chat.chat_id),
             pending_join.retry_count + 1,
         );

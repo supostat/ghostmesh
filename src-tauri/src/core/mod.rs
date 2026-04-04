@@ -11,13 +11,19 @@ pub mod crypto {
 pub mod store;
 
 pub mod net {
+    pub mod actor;
     pub mod discovery;
+    pub mod event_sink;
+    pub mod handler;
     pub mod peer_manager;
+    pub mod service;
     pub mod transport;
     pub mod wire;
 
     pub use discovery::{DiscoveredPeer, MdnsDiscovery};
+    pub use event_sink::NetEventSink;
     pub use peer_manager::{PeerConnectionInfo, PeerManager};
+    pub use service::{NetworkCommand, NetworkService};
     pub use transport::{AuthHello, SecureConnection};
     pub use wire::{
         decode_wire_message, encode_wire_message, frame_message, read_frame_length,

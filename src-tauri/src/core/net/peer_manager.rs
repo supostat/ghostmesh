@@ -7,6 +7,7 @@ use crate::types::PeerId;
 pub struct PeerConnectionInfo {
     pub address: String,
     pub connected_at: u64,
+    pub display_name: String,
 }
 
 pub struct PeerManager {
@@ -20,7 +21,12 @@ impl PeerManager {
         }
     }
 
-    pub fn add_connection(&mut self, peer_id: PeerId, address: String) -> bool {
+    pub fn add_connection(
+        &mut self,
+        peer_id: PeerId,
+        address: String,
+        display_name: String,
+    ) -> bool {
         if self.connections.contains_key(&peer_id) {
             return false;
         }
@@ -33,6 +39,7 @@ impl PeerManager {
             PeerConnectionInfo {
                 address,
                 connected_at,
+                display_name,
             },
         );
         true
@@ -65,6 +72,12 @@ impl PeerManager {
     pub fn get_connection_info(&self, peer_id: &PeerId) -> Option<&PeerConnectionInfo> {
         self.connections.get(peer_id)
     }
+
+    pub fn get_display_name(&self, peer_id: &PeerId) -> Option<&str> {
+        self.connections
+            .get(peer_id)
+            .map(|info| info.display_name.as_str())
+    }
 }
 
 #[cfg(test)]
@@ -85,7 +98,11 @@ mod tests {
     #[test]
     fn add_connection_succeeds() {
         let mut manager = PeerManager::new();
-        let added = manager.add_connection(PEER_A, "127.0.0.1:9473".to_string());
+        let added = manager.add_connection(
+            PEER_A,
+            "127.0.0.1:9473".to_string(),
+            "Alice".to_string(),
+        );
         assert!(added);
         assert_eq!(manager.connected_count(), 1);
         assert!(manager.is_connected(&PEER_A));
@@ -94,8 +111,16 @@ mod tests {
     #[test]
     fn add_duplicate_connection_rejected() {
         let mut manager = PeerManager::new();
-        manager.add_connection(PEER_A, "127.0.0.1:9473".to_string());
-        let duplicate = manager.add_connection(PEER_A, "192.168.1.1:9473".to_string());
+        manager.add_connection(
+            PEER_A,
+            "127.0.0.1:9473".to_string(),
+            "Alice".to_string(),
+        );
+        let duplicate = manager.add_connection(
+            PEER_A,
+            "192.168.1.1:9473".to_string(),
+            "Alice2".to_string(),
+        );
         assert!(!duplicate);
         assert_eq!(manager.connected_count(), 1);
         assert_eq!(
@@ -107,7 +132,11 @@ mod tests {
     #[test]
     fn remove_existing_connection() {
         let mut manager = PeerManager::new();
-        manager.add_connection(PEER_A, "127.0.0.1:9473".to_string());
+        manager.add_connection(
+            PEER_A,
+            "127.0.0.1:9473".to_string(),
+            String::new(),
+        );
         let removed = manager.remove_connection(&PEER_A);
         assert_eq!(removed.unwrap(), "127.0.0.1:9473");
         assert!(!manager.is_connected(&PEER_A));
@@ -125,7 +154,11 @@ mod tests {
     fn is_connected_reflects_state() {
         let mut manager = PeerManager::new();
         assert!(!manager.is_connected(&PEER_A));
-        manager.add_connection(PEER_A, "127.0.0.1:9473".to_string());
+        manager.add_connection(
+            PEER_A,
+            "127.0.0.1:9473".to_string(),
+            String::new(),
+        );
         assert!(manager.is_connected(&PEER_A));
         manager.remove_connection(&PEER_A);
         assert!(!manager.is_connected(&PEER_A));
@@ -134,9 +167,9 @@ mod tests {
     #[test]
     fn connected_peers_lists_all() {
         let mut manager = PeerManager::new();
-        manager.add_connection(PEER_A, "1.1.1.1:9473".to_string());
-        manager.add_connection(PEER_B, "2.2.2.2:9473".to_string());
-        manager.add_connection(PEER_C, "3.3.3.3:9473".to_string());
+        manager.add_connection(PEER_A, "1.1.1.1:9473".to_string(), String::new());
+        manager.add_connection(PEER_B, "2.2.2.2:9473".to_string(), String::new());
+        manager.add_connection(PEER_C, "3.3.3.3:9473".to_string(), String::new());
 
         let mut peers = manager.connected_peers();
         peers.sort();
@@ -148,32 +181,69 @@ mod tests {
     #[test]
     fn get_address_returns_correct_value() {
         let mut manager = PeerManager::new();
-        manager.add_connection(PEER_A, "10.0.0.1:9473".to_string());
+        manager.add_connection(PEER_A, "10.0.0.1:9473".to_string(), String::new());
         assert_eq!(manager.get_address(&PEER_A).unwrap(), "10.0.0.1:9473");
         assert!(manager.get_address(&PEER_B).is_none());
     }
 
     #[test]
-    fn connection_info_has_timestamp() {
+    fn connection_info_has_timestamp_and_display_name() {
         let mut manager = PeerManager::new();
-        manager.add_connection(PEER_A, "127.0.0.1:9473".to_string());
+        manager.add_connection(
+            PEER_A,
+            "127.0.0.1:9473".to_string(),
+            "Alice".to_string(),
+        );
         let info = manager.get_connection_info(&PEER_A).unwrap();
         assert!(info.connected_at > 0);
         assert_eq!(info.address, "127.0.0.1:9473");
+        assert_eq!(info.display_name, "Alice");
     }
 
     #[test]
     fn multiple_add_remove_cycles() {
         let mut manager = PeerManager::new();
 
-        manager.add_connection(PEER_A, "1.1.1.1:9473".to_string());
+        manager.add_connection(PEER_A, "1.1.1.1:9473".to_string(), String::new());
         assert_eq!(manager.connected_count(), 1);
 
         manager.remove_connection(&PEER_A);
         assert_eq!(manager.connected_count(), 0);
 
-        let re_added = manager.add_connection(PEER_A, "2.2.2.2:9473".to_string());
+        let re_added = manager.add_connection(
+            PEER_A,
+            "2.2.2.2:9473".to_string(),
+            String::new(),
+        );
         assert!(re_added);
         assert_eq!(manager.get_address(&PEER_A).unwrap(), "2.2.2.2:9473");
+    }
+
+    #[test]
+    fn get_display_name_returns_stored_value() {
+        let mut manager = PeerManager::new();
+        manager.add_connection(
+            PEER_A,
+            "127.0.0.1:9473".to_string(),
+            "Alice".to_string(),
+        );
+        assert_eq!(manager.get_display_name(&PEER_A).unwrap(), "Alice");
+    }
+
+    #[test]
+    fn get_display_name_returns_none_for_unknown_peer() {
+        let manager = PeerManager::new();
+        assert!(manager.get_display_name(&PEER_A).is_none());
+    }
+
+    #[test]
+    fn get_display_name_returns_empty_when_unresolved() {
+        let mut manager = PeerManager::new();
+        manager.add_connection(
+            PEER_A,
+            "127.0.0.1:9473".to_string(),
+            String::new(),
+        );
+        assert_eq!(manager.get_display_name(&PEER_A).unwrap(), "");
     }
 }
