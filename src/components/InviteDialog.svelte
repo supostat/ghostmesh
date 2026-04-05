@@ -1,4 +1,5 @@
 <script lang="ts">
+  import QRCode from "qrcode";
   import { generateInvite, joinChat } from "../lib/api";
   import { loadChats } from "../lib/stores/chats.svelte";
 
@@ -17,6 +18,21 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let copied = $state(false);
+  let qrDataUrl = $state<string | null>(null);
+
+  $effect(() => {
+    if (inviteCode) {
+      QRCode.toDataURL(inviteCode, { width: 200, margin: 1 })
+        .then((url: string) => {
+          qrDataUrl = url;
+        })
+        .catch(() => {
+          qrDataUrl = null;
+        });
+    } else {
+      qrDataUrl = null;
+    }
+  });
 
   $effect(() => {
     if (mode === "generate" && chatId) {
@@ -78,6 +94,9 @@
           <p class="text-muted">Generating invite...</p>
         {:else if inviteCode}
           <div class="invite-display">
+            {#if qrDataUrl}
+              <img src={qrDataUrl} alt="Invite QR" class="qr-code" />
+            {/if}
             <textarea
               class="invite-code mono selectable"
               readonly
@@ -195,5 +214,11 @@
   .field-label {
     font-size: 13px;
     color: var(--text-secondary);
+  }
+
+  .qr-code {
+    display: block;
+    margin: 0 auto 1rem;
+    border-radius: 8px;
   }
 </style>

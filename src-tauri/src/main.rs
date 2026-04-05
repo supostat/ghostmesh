@@ -70,8 +70,9 @@ fn main() {
             });
 
             let cleanup_db_path = db_path_str.to_string();
+            let cleanup_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                run_periodic_cleanup(cleanup_db_path).await;
+                run_periodic_cleanup(cleanup_db_path, cleanup_handle).await;
             });
 
             let update_handle = app.handle().clone();
@@ -187,7 +188,7 @@ const CLEANUP_INTERVAL: Duration = Duration::from_secs(300);
 const STALE_PEER_ADDRESS_MAX_AGE_SECS: u64 = 86400 * 30;
 const STALE_PEER_ADDRESS_MIN_FAILURES: u32 = 10;
 
-async fn run_periodic_cleanup(db_path: String) {
+async fn run_periodic_cleanup(db_path: String, app: tauri::AppHandle) {
     let store = match Store::open(&db_path) {
         Ok(s) => s,
         Err(error) => {
@@ -210,6 +211,26 @@ async fn run_periodic_cleanup(db_path: String) {
             }
             Err(error) => {
                 tracing::debug!("cleanup: failed to clean peer addresses: {error}");
+            }
+        }
+
+        let ttl_days = app
+            .state::<AppState>()
+            .settings
+            .lock()
+            .ok()
+            .and_then(|s| s.message_ttl_days);
+
+        if let Some(ttl) = ttl_days {
+            match store.delete_old_messages(ttl) {
+                Ok(deleted) => {
+                    if deleted > 0 {
+                        tracing::info!("cleanup: deleted {deleted} expired messages (ttl={ttl} days)");
+                    }
+                }
+                Err(error) => {
+                    tracing::debug!("cleanup: failed to delete old messages: {error}");
+                }
             }
         }
     }

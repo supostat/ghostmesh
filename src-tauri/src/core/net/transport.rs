@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use snow::Keypair;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -10,6 +12,9 @@ use super::wire::{decode_wire_message, encode_wire_message, frame_message, read_
 
 const PROTOCOL_VERSION: u8 = 1;
 const MAX_HANDSHAKE_MESSAGE_LEN: usize = 65535;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const SEND_TIMEOUT: Duration = Duration::from_secs(30);
+const RECEIVE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthHello {
@@ -32,8 +37,9 @@ impl SecureConnection {
         local_peer_id: &PeerId,
         local_signing_pk: &[u8; 32],
     ) -> Result<Self, CoreError> {
-        let stream = TcpStream::connect(address)
+        let stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(address))
             .await
+            .map_err(|_| CoreError::Net(format!("operation timed out: TCP connect to {address}")))?
             .map_err(|e| CoreError::Net(format!("TCP connect error: {e}")))?;
 
         Self::perform_initiator_handshake(
@@ -64,30 +70,43 @@ impl SecureConnection {
         let cbor_payload = encode_wire_message(message)?;
         let ciphertext = self.noise.encrypt(&cbor_payload)?;
         let framed = frame_message(&ciphertext)?;
-        self.stream
-            .write_all(&framed)
-            .await
-            .map_err(|e| CoreError::Net(format!("TCP write error: {e}")))?;
-        self.stream
-            .flush()
-            .await
-            .map_err(|e| CoreError::Net(format!("TCP flush error: {e}")))?;
+
+        tokio::time::timeout(SEND_TIMEOUT, async {
+            self.stream
+                .write_all(&framed)
+                .await
+                .map_err(|e| CoreError::Net(format!("TCP write error: {e}")))?;
+            self.stream
+                .flush()
+                .await
+                .map_err(|e| CoreError::Net(format!("TCP flush error: {e}")))?;
+            Ok::<(), CoreError>(())
+        })
+        .await
+        .map_err(|_| CoreError::Net("operation timed out: send".to_string()))??;
+
         Ok(())
     }
 
     pub async fn receive(&mut self) -> Result<WireMessage, CoreError> {
-        let mut length_header = [0u8; 4];
-        self.stream
-            .read_exact(&mut length_header)
-            .await
-            .map_err(|e| CoreError::Net(format!("TCP read length error: {e}")))?;
+        let ciphertext = tokio::time::timeout(RECEIVE_TIMEOUT, async {
+            let mut length_header = [0u8; 4];
+            self.stream
+                .read_exact(&mut length_header)
+                .await
+                .map_err(|e| CoreError::Net(format!("TCP read length error: {e}")))?;
 
-        let frame_length = read_frame_length(&length_header)?;
-        let mut ciphertext = vec![0u8; frame_length];
-        self.stream
-            .read_exact(&mut ciphertext)
-            .await
-            .map_err(|e| CoreError::Net(format!("TCP read payload error: {e}")))?;
+            let frame_length = read_frame_length(&length_header)?;
+            let mut ciphertext = vec![0u8; frame_length];
+            self.stream
+                .read_exact(&mut ciphertext)
+                .await
+                .map_err(|e| CoreError::Net(format!("TCP read payload error: {e}")))?;
+
+            Ok::<_, CoreError>(ciphertext)
+        })
+        .await
+        .map_err(|_| CoreError::Net("operation timed out: receive".to_string()))??;
 
         let plaintext = self.noise.decrypt(&ciphertext)?;
         decode_wire_message(&plaintext)

@@ -315,6 +315,19 @@ impl Store {
         }
     }
 
+    pub fn delete_old_messages(&self, ttl_days: u32) -> Result<u64, CoreError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| CoreError::Store("system clock error".to_string()))?
+            .as_secs();
+        let cutoff = now.saturating_sub(ttl_days as u64 * 86400);
+        let deleted = self
+            .connection()
+            .execute("DELETE FROM messages WHERE created_at < ?1", [cutoff])
+            .map_err(|e| CoreError::Store(format!("delete_old_messages: {e}")))?;
+        Ok(deleted as u64)
+    }
+
     pub fn update_frontier(
         &self,
         chat_id: &ChatId,
@@ -843,6 +856,37 @@ mod tests {
     }
 
     // --- CBOR parent_ids encoding ---
+
+    #[test]
+    fn delete_old_messages_removes_old_keeps_recent() {
+        let store = test_store();
+        setup_chat(&store);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Old message: 100 days ago
+        let mut old_msg = sample_message(1);
+        old_msg.message_id = [0x01; 32];
+        old_msg.created_at = now - 100 * 86400;
+
+        // Recent message: 1 day ago
+        let mut recent_msg = sample_message(2);
+        recent_msg.message_id = [0x02; 32];
+        recent_msg.created_at = now - 86400;
+
+        store.insert_message(&old_msg).unwrap();
+        store.insert_message(&recent_msg).unwrap();
+
+        let deleted = store.delete_old_messages(30).unwrap();
+        assert_eq!(deleted, 1);
+
+        let remaining = store.get_messages(&sample_chat_id(), None, 100).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].lamport_ts, 2);
+    }
 
     #[test]
     fn encode_decode_parent_ids_roundtrip() {

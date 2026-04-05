@@ -153,19 +153,6 @@ pub struct NetworkStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MemberEvent {
-    pub chat_id: String,
-    pub peer_id: String,
-    pub display_name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeyRotationEvent {
-    pub chat_id: String,
-    pub new_key_epoch: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatJoinComplete {
     pub chat_id: String,
     pub chat_name: String,

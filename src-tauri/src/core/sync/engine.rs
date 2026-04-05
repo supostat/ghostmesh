@@ -122,7 +122,7 @@ impl SyncEngine {
         owner_exchange_sk: &[u8; 32],
         owner_password: &str,
     ) -> Result<WireMessage, CoreError> {
-        let chat = store
+        let _chat = store
             .get_chat(chat_id)?
             .ok_or_else(|| CoreError::NotFound("chat not found".to_string()))?;
 
