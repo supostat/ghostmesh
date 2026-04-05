@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use snow::Keypair;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
+use tokio::time;
 
+use super::discovery::MdnsDiscovery;
 use crate::net::actor::{PeerActor, PeerCommand};
 use crate::net::event_sink::NetEventSink;
 use crate::net::peer_manager::PeerManager;
@@ -14,6 +17,7 @@ use crate::sync::lamport::LamportClock;
 use crate::types::{PeerId, WireMessage};
 
 const PEER_COMMAND_CHANNEL_SIZE: usize = 64;
+const MDNS_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 pub enum NetworkCommand {
@@ -80,6 +84,21 @@ impl NetworkService {
             }
         };
 
+        let listen_port = self.parse_listen_port();
+
+        let mut mdns_discovery = match MdnsDiscovery::new(&self.local_peer_id, listen_port) {
+            Ok(discovery) => {
+                tracing::info!("mDNS discovery started");
+                Some(discovery)
+            }
+            Err(error) => {
+                tracing::warn!("mDNS initialization failed: {error}");
+                None
+            }
+        };
+
+        let mut mdns_poll_interval = time::interval(MDNS_POLL_INTERVAL);
+
         loop {
             tokio::select! {
                 accept_result = listener.accept() => {
@@ -106,8 +125,45 @@ impl NetworkService {
                         }
                     }
                 }
+                _ = mdns_poll_interval.tick() => {
+                    if let Some(ref mut discovery) = mdns_discovery {
+                        for peer in discovery.discovered_peers() {
+                            if self.peer_channels.contains_key(&peer.peer_id) {
+                                continue;
+                            }
+                            if let Some(address) = peer.addresses.first() {
+                                tracing::info!(
+                                    "mDNS: connecting to {} at {}",
+                                    hex::encode(peer.peer_id),
+                                    address
+                                );
+                                self.connect_to_peer(address, event_sink.clone()).await;
+                            }
+                        }
+                    }
+                }
             }
         }
+
+        if let Some(discovery) = mdns_discovery {
+            if let Err(error) = discovery.shutdown() {
+                tracing::warn!("mDNS shutdown error: {error}");
+            }
+        }
+    }
+
+    fn parse_listen_port(&self) -> u16 {
+        self.bind_address
+            .rsplit(':')
+            .next()
+            .and_then(|port_str| port_str.parse::<u16>().ok())
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "failed to parse port from '{}', using default 9473",
+                    self.bind_address
+                );
+                9473
+            })
     }
 
     async fn handle_incoming_connection(
@@ -348,6 +404,44 @@ mod tests {
             is_removed: false,
         };
         store.insert_chat_member(&member).unwrap();
+    }
+
+    fn test_service_with_address(store: Store, address: &str) -> NetworkService {
+        let noise_keypair = crate::crypto::noise::generate_noise_keypair().unwrap();
+        let (service, _command_tx) = NetworkService::new(
+            address.to_string(),
+            test_peer_id(),
+            noise_keypair,
+            [0u8; 32],
+            Arc::new(Mutex::new(PeerManager::new())),
+            Arc::new(Mutex::new(store)),
+            Arc::new(Mutex::new(LamportClock::new())),
+            Arc::new(Mutex::new(None)),
+        );
+        service
+    }
+
+    // --- parse_listen_port ---
+
+    #[test]
+    fn parse_listen_port_extracts_valid_port() {
+        let store = Store::open_in_memory().unwrap();
+        let service = test_service_with_address(store, "127.0.0.1:9473");
+        assert_eq!(service.parse_listen_port(), 9473);
+    }
+
+    #[test]
+    fn parse_listen_port_handles_port_zero() {
+        let store = Store::open_in_memory().unwrap();
+        let service = test_service_with_address(store, "0.0.0.0:0");
+        assert_eq!(service.parse_listen_port(), 0);
+    }
+
+    #[test]
+    fn parse_listen_port_defaults_on_invalid_format() {
+        let store = Store::open_in_memory().unwrap();
+        let service = test_service_with_address(store, "invalid");
+        assert_eq!(service.parse_listen_port(), 9473);
     }
 
     // --- resolve_display_name ---

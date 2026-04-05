@@ -1,14 +1,20 @@
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::sync::mpsc;
+use tokio::time;
 
 use crate::net::event_sink::NetEventSink;
 use crate::net::handler;
 use crate::net::peer_manager::PeerManager;
 use crate::net::transport::SecureConnection;
 use crate::store::Store;
+use crate::sync::engine::SyncEngine;
 use crate::sync::lamport::LamportClock;
 use crate::types::PeerId;
+
+const SYNC_INTERVAL: Duration = Duration::from_secs(60);
+const PEER_EXCHANGE_INTERVAL: Duration = Duration::from_secs(300);
 
 pub enum PeerCommand {
     Send(crate::types::WireMessage),
@@ -56,6 +62,13 @@ impl PeerActor {
             hex::encode(remote_peer_id)
         );
 
+        let mut sync_interval = time::interval(SYNC_INTERVAL);
+        let mut peer_exchange_interval = time::interval(PEER_EXCHANGE_INTERVAL);
+
+        // Skip the first immediate tick — timers fire at t=0 by default
+        sync_interval.tick().await;
+        peer_exchange_interval.tick().await;
+
         loop {
             tokio::select! {
                 receive_result = self.connection.receive() => {
@@ -97,10 +110,112 @@ impl PeerActor {
                         }
                     }
                 }
+                _ = sync_interval.tick() => {
+                    self.run_periodic_sync().await;
+                }
+                _ = peer_exchange_interval.tick() => {
+                    self.run_periodic_peer_exchange().await;
+                }
             }
         }
 
         self.cleanup(remote_peer_id);
+    }
+
+    fn get_chat_ids(&self) -> Vec<[u8; 16]> {
+        let store = match self.store.lock() {
+            Ok(s) => s,
+            Err(error) => {
+                tracing::warn!("store lock error: {error}");
+                return Vec::new();
+            }
+        };
+        match store.list_chats() {
+            Ok(chats) => chats.into_iter().map(|c| c.chat_id).collect(),
+            Err(error) => {
+                tracing::warn!("list_chats error: {error}");
+                Vec::new()
+            }
+        }
+    }
+
+    async fn run_periodic_sync(&mut self) {
+        let remote_peer_id = *self.connection.remote_peer_id();
+
+        let chat_ids = self.get_chat_ids();
+        if chat_ids.is_empty() {
+            return;
+        }
+
+        for chat_id in &chat_ids {
+            let request = {
+                let store = match self.store.lock() {
+                    Ok(s) => s,
+                    Err(error) => {
+                        tracing::warn!("periodic sync: store lock error for chat {}: {error}", hex::encode(chat_id));
+                        continue;
+                    }
+                };
+                match SyncEngine::prepare_sync_request(&store, chat_id) {
+                    Ok(req) => req,
+                    Err(error) => {
+                        tracing::warn!(
+                            "periodic sync: prepare_sync_request failed for chat {}: {error}",
+                            hex::encode(chat_id)
+                        );
+                        continue;
+                    }
+                }
+            };
+
+            if let Err(error) = self.connection.send(&request).await {
+                tracing::warn!(
+                    "periodic sync: send failed to peer {} for chat {}: {error}",
+                    hex::encode(remote_peer_id),
+                    hex::encode(chat_id)
+                );
+            }
+        }
+    }
+
+    async fn run_periodic_peer_exchange(&mut self) {
+        let remote_peer_id = *self.connection.remote_peer_id();
+
+        let chat_ids = self.get_chat_ids();
+        if chat_ids.is_empty() {
+            return;
+        }
+
+        for chat_id in &chat_ids {
+            let message = {
+                let store = match self.store.lock() {
+                    Ok(s) => s,
+                    Err(error) => {
+                        tracing::warn!("periodic peer exchange: store lock error for chat {}: {error}", hex::encode(chat_id));
+                        continue;
+                    }
+                };
+                match handler::prepare_peer_exchange(&store, chat_id) {
+                    Ok(Some(msg)) => msg,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        tracing::warn!(
+                            "periodic peer exchange: prepare failed for chat {}: {error}",
+                            hex::encode(chat_id)
+                        );
+                        continue;
+                    }
+                }
+            };
+
+            if let Err(error) = self.connection.send(&message).await {
+                tracing::warn!(
+                    "periodic peer exchange: send failed to peer {} for chat {}: {error}",
+                    hex::encode(remote_peer_id),
+                    hex::encode(chat_id)
+                );
+            }
+        }
     }
 
     fn handle_incoming(

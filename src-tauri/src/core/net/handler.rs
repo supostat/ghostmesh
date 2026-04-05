@@ -213,6 +213,20 @@ fn dispatch_join_response(
     Ok(None)
 }
 
+pub fn prepare_peer_exchange(
+    store: &Store,
+    chat_id: &[u8; 16],
+) -> Result<Option<WireMessage>, CoreError> {
+    let addresses = store.get_all_peer_addresses()?;
+    if addresses.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(WireMessage::PeerExchange {
+        chat_id: *chat_id,
+        peers: addresses,
+    }))
+}
+
 fn dispatch_peer_exchange(
     store: &Store,
     peers: &[crate::types::PeerAddress],
@@ -512,5 +526,74 @@ mod tests {
         assert_eq!(addresses.len(), 1);
         assert_eq!(addresses[0].address, "10.0.0.1:9473");
         assert!(addresses[0].last_seen > 0);
+    }
+
+    #[test]
+    fn prepare_peer_exchange_returns_none_when_no_addresses() {
+        let store = test_store();
+
+        let result = prepare_peer_exchange(&store, &chat_id()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn prepare_peer_exchange_includes_all_addresses() {
+        let store = test_store();
+
+        store
+            .upsert_peer_address(&PeerAddress {
+                peer_id: peer_a(),
+                address_type: "tcp".to_string(),
+                address: "10.0.0.1:9473".to_string(),
+                last_seen: 1000,
+                last_successful: None,
+                fail_count: 0,
+            })
+            .unwrap();
+        store
+            .upsert_peer_address(&PeerAddress {
+                peer_id: peer_b(),
+                address_type: "tcp".to_string(),
+                address: "10.0.0.2:9473".to_string(),
+                last_seen: 2000,
+                last_successful: None,
+                fail_count: 0,
+            })
+            .unwrap();
+
+        let result = prepare_peer_exchange(&store, &chat_id()).unwrap();
+        match result {
+            Some(WireMessage::PeerExchange { peers, .. }) => {
+                assert_eq!(peers.len(), 2);
+            }
+            other => panic!("expected PeerExchange with 2 peers, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prepare_peer_exchange_returns_message_with_addresses() {
+        let store = test_store();
+
+        store
+            .upsert_peer_address(&PeerAddress {
+                peer_id: peer_b(),
+                address_type: "tcp".to_string(),
+                address: "10.0.0.1:9473".to_string(),
+                last_seen: 1000,
+                last_successful: None,
+                fail_count: 0,
+            })
+            .unwrap();
+
+        let result = prepare_peer_exchange(&store, &chat_id()).unwrap();
+        match result {
+            Some(WireMessage::PeerExchange { chat_id: cid, peers }) => {
+                assert_eq!(cid, chat_id());
+                assert_eq!(peers.len(), 1);
+                assert_eq!(peers[0].peer_id, peer_b());
+                assert_eq!(peers[0].address, "10.0.0.1:9473");
+            }
+            other => panic!("expected PeerExchange, got {other:?}"),
+        }
     }
 }
