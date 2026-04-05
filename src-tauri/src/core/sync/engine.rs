@@ -161,6 +161,43 @@ impl SyncEngine {
         })
     }
 
+    /// Processes a rekey package received when a member is removed.
+    ///
+    /// Derives shared secret from the receiver's exchange_sk and the
+    /// sender's exchange_pk, unwraps the new group key, re-encrypts it
+    /// with the receiver's password, and stores as a new ChatKey.
+    pub fn process_rekey_package(
+        store: &Store,
+        chat_id: &ChatId,
+        new_key_epoch: u64,
+        rekey_package: &crate::types::RekeyPackage,
+        my_exchange_sk: &[u8; 32],
+        sender_exchange_pk: &[u8; 32],
+        password: &str,
+    ) -> Result<(), CoreError> {
+        let shared_secret =
+            derive_shared_secret(my_exchange_sk, sender_exchange_pk)?;
+        let raw_group_key =
+            unwrap_key(&rekey_package.encrypted_key, &shared_secret)?;
+
+        let local_group_key_enc =
+            encrypt_key_storage(password, &raw_group_key)?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| CoreError::Sync("system clock before unix epoch".to_string()))?
+            .as_secs();
+
+        store.insert_chat_key(&ChatKey {
+            chat_id: *chat_id,
+            key_epoch: new_key_epoch,
+            group_key_enc: local_group_key_enc,
+            created_at: now,
+        })?;
+
+        Ok(())
+    }
+
     /// Joiner-side: processes the JoinResponse received from the owner.
     ///
     /// Unwraps the sealed group key using the DH shared secret,
@@ -1099,5 +1136,98 @@ mod tests {
             &group_key_raw,
             "decrypted group key must match original"
         );
+    }
+
+    // --- process_rekey_package ---
+
+    #[test]
+    fn process_rekey_package_stores_new_key() {
+        use crate::crypto::encrypt::wrap_key;
+        use crate::crypto::exchange::derive_shared_secret;
+        use crate::types::RekeyPackage;
+
+        let store = test_store();
+        setup_chat(&store);
+
+        // Initial group key at epoch 0
+        let initial_key_enc = encrypt_key_storage("owner-pass", &[0x11u8; 32]).unwrap();
+        store
+            .insert_chat_key(&ChatKey {
+                chat_id: chat_id(),
+                key_epoch: 0,
+                group_key_enc: initial_key_enc,
+                created_at: 1000,
+            })
+            .unwrap();
+
+        // Owner and receiver exchange keypairs
+        let owner_kp = generate_exchange_keypair();
+        let receiver_kp = generate_exchange_keypair();
+
+        // New group key for epoch 1
+        let new_group_key = [0x99u8; 32];
+        let shared = derive_shared_secret(&owner_kp.secret, &receiver_kp.public).unwrap();
+        let encrypted_key = wrap_key(&new_group_key, &shared).unwrap();
+
+        let package = RekeyPackage {
+            target_peer_id: peer_b(),
+            encrypted_key,
+        };
+
+        SyncEngine::process_rekey_package(
+            &store,
+            &chat_id(),
+            1,
+            &package,
+            &receiver_kp.secret,
+            &owner_kp.public,
+            "receiver-pass",
+        )
+        .unwrap();
+
+        // Verify new key stored at epoch 1
+        let stored_key = store.get_chat_key(&chat_id(), 1).unwrap().unwrap();
+        assert_eq!(stored_key.key_epoch, 1);
+
+        // Verify decrypts to original new group key
+        let decrypted =
+            decrypt_key_storage("receiver-pass", &stored_key.group_key_enc).unwrap();
+        assert_eq!(decrypted.as_slice(), &new_group_key);
+    }
+
+    #[test]
+    fn process_rekey_package_wrong_key_fails() {
+        use crate::crypto::encrypt::wrap_key;
+        use crate::crypto::exchange::derive_shared_secret;
+        use crate::types::RekeyPackage;
+
+        let store = test_store();
+        setup_chat(&store);
+
+        let owner_kp = generate_exchange_keypair();
+        let receiver_kp = generate_exchange_keypair();
+        let wrong_kp = generate_exchange_keypair();
+
+        let new_group_key = [0x99u8; 32];
+        let shared = derive_shared_secret(&owner_kp.secret, &receiver_kp.public).unwrap();
+        let encrypted_key = wrap_key(&new_group_key, &shared).unwrap();
+
+        let package = RekeyPackage {
+            target_peer_id: peer_b(),
+            encrypted_key,
+        };
+
+        // Use wrong sender public key — should fail unwrapping
+        let result = SyncEngine::process_rekey_package(
+            &store,
+            &chat_id(),
+            1,
+            &package,
+            &receiver_kp.secret,
+            &wrong_kp.public,
+            "receiver-pass",
+        );
+
+        assert!(result.is_err());
     }
 }

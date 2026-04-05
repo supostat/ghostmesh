@@ -89,13 +89,15 @@ fn main() {
             commands::identity::validate_password,
             commands::identity::export_identity,
             commands::identity::import_identity,
-            // Chats (6)
+            // Chats (8)
             commands::chats::create_chat,
             commands::chats::list_chats,
             commands::chats::get_chat,
             commands::chats::generate_invite,
             commands::chats::join_chat,
             commands::chats::leave_chat,
+            commands::chats::set_member_role,
+            commands::chats::remove_member,
             // Messages (3)
             commands::messages::send_message,
             commands::messages::get_messages,

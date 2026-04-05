@@ -315,6 +315,52 @@ impl Store {
         }
     }
 
+    pub fn get_latest_message(
+        &self,
+        chat_id: &ChatId,
+    ) -> Result<Option<Message>, CoreError> {
+        let mut statement = self
+            .connection()
+            .prepare(
+                "SELECT message_id, chat_id, author_peer_id, lamport_ts, created_at,
+                        key_epoch, parent_ids, signature, payload_ciphertext, payload_nonce, received_at
+                 FROM messages
+                 WHERE chat_id = ?1
+                 ORDER BY lamport_ts DESC, author_peer_id DESC
+                 LIMIT 1",
+            )
+            .map_err(|e| CoreError::Store(format!("failed to prepare get_latest_message: {e}")))?;
+
+        let mut rows = statement
+            .query_map([chat_id.as_slice()], |row| {
+                let parent_ids_blob: Option<Vec<u8>> = row.get(6)?;
+                Ok(MessageRow {
+                    message_id: row.get::<_, Vec<u8>>(0)?,
+                    chat_id: row.get::<_, Vec<u8>>(1)?,
+                    author_peer_id: row.get::<_, Vec<u8>>(2)?,
+                    lamport_ts: row.get(3)?,
+                    created_at: row.get(4)?,
+                    key_epoch: row.get(5)?,
+                    parent_ids_blob,
+                    signature: row.get(7)?,
+                    payload_ciphertext: row.get(8)?,
+                    payload_nonce: row.get::<_, Vec<u8>>(9)?,
+                    received_at: row.get(10)?,
+                })
+            })
+            .map_err(|e| CoreError::Store(format!("failed to query latest message: {e}")))?;
+
+        match rows.next() {
+            Some(row) => {
+                let raw = row.map_err(|e| {
+                    CoreError::Store(format!("failed to read latest message row: {e}"))
+                })?;
+                Ok(Some(message_row_to_message(raw)?))
+            }
+            None => Ok(None),
+        }
+    }
+
     pub fn delete_old_messages(&self, ttl_days: u32) -> Result<u64, CoreError> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -886,6 +932,76 @@ mod tests {
         let remaining = store.get_messages(&sample_chat_id(), None, 100).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].lamport_ts, 2);
+    }
+
+    #[test]
+    fn get_latest_message_returns_most_recent() {
+        let store = test_store();
+        setup_chat(&store);
+
+        let peer_a = [1u8; 16];
+        let peer_b = [2u8; 16];
+
+        let mut msg1 = sample_message(1);
+        msg1.message_id = [0x01; 32];
+        msg1.author_peer_id = peer_a;
+        msg1.created_at = 5000;
+
+        let mut msg2 = sample_message(3);
+        msg2.message_id = [0x02; 32];
+        msg2.author_peer_id = peer_b;
+        msg2.created_at = 7000;
+
+        let mut msg3 = sample_message(2);
+        msg3.message_id = [0x03; 32];
+        msg3.author_peer_id = peer_a;
+        msg3.created_at = 6000;
+
+        store.insert_message(&msg1).unwrap();
+        store.insert_message(&msg2).unwrap();
+        store.insert_message(&msg3).unwrap();
+
+        let latest = store
+            .get_latest_message(&sample_chat_id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.lamport_ts, 3);
+        assert_eq!(latest.created_at, 7000);
+        assert_eq!(latest.author_peer_id, peer_b);
+    }
+
+    #[test]
+    fn get_latest_message_empty_chat() {
+        let store = test_store();
+        let result = store.get_latest_message(&sample_chat_id()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn get_latest_message_same_lamport_uses_peer_id_tiebreak() {
+        let store = test_store();
+        setup_chat(&store);
+
+        let peer_a = [1u8; 16];
+        let peer_b = [2u8; 16];
+
+        let mut msg_a = sample_message(5);
+        msg_a.message_id = [0xAA; 32];
+        msg_a.author_peer_id = peer_a;
+
+        let mut msg_b = sample_message(5);
+        msg_b.message_id = [0xBB; 32];
+        msg_b.author_peer_id = peer_b;
+
+        store.insert_message(&msg_a).unwrap();
+        store.insert_message(&msg_b).unwrap();
+
+        let latest = store
+            .get_latest_message(&sample_chat_id())
+            .unwrap()
+            .unwrap();
+        // peer_b ([2;16]) > peer_a ([1;16]) in byte order, so it should be picked
+        assert_eq!(latest.author_peer_id, peer_b);
     }
 
     #[test]

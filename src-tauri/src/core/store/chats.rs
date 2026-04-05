@@ -161,6 +161,32 @@ impl Store {
         Ok(())
     }
 
+    pub fn update_member_role(
+        &self,
+        chat_id: &ChatId,
+        peer_id: &PeerId,
+        new_role: MemberRole,
+    ) -> Result<(), CoreError> {
+        let affected = self
+            .connection()
+            .execute(
+                "UPDATE chat_members SET role = ?1 WHERE chat_id = ?2 AND peer_id = ?3 AND is_removed = 0",
+                rusqlite::params![
+                    new_role.as_str(),
+                    chat_id.as_slice(),
+                    peer_id.as_slice(),
+                ],
+            )
+            .map_err(|e| CoreError::Store(format!("failed to update member role: {e}")))?;
+
+        if affected == 0 {
+            return Err(CoreError::NotFound(
+                "active chat member not found".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn insert_chat_key(&self, key: &ChatKey) -> Result<(), CoreError> {
         self.connection()
             .execute(
@@ -795,6 +821,51 @@ mod tests {
 
         let loaded = store.get_pending_join(&sample_chat_id()).unwrap().unwrap();
         assert_eq!(loaded.retry_count, 2);
+    }
+
+    // --- update_member_role ---
+
+    #[test]
+    fn update_member_role_succeeds() {
+        let store = test_store();
+        store.insert_chat(&sample_chat()).unwrap();
+
+        let member_peer = [3u8; 16];
+        let member = sample_member(member_peer, MemberRole::Member);
+        store.insert_chat_member(&member).unwrap();
+
+        store
+            .update_member_role(&sample_chat_id(), &member_peer, MemberRole::Admin)
+            .unwrap();
+
+        let members = store.get_chat_members(&sample_chat_id()).unwrap();
+        let updated = members.iter().find(|m| m.peer_id == member_peer).unwrap();
+        assert_eq!(updated.role, MemberRole::Admin);
+    }
+
+    #[test]
+    fn update_member_role_not_found() {
+        let store = test_store();
+        store.insert_chat(&sample_chat()).unwrap();
+
+        let result =
+            store.update_member_role(&sample_chat_id(), &[99u8; 16], MemberRole::Admin);
+        assert!(matches!(result, Err(CoreError::NotFound(_))));
+    }
+
+    #[test]
+    fn update_member_role_skips_removed_members() {
+        let store = test_store();
+        store.insert_chat(&sample_chat()).unwrap();
+
+        let member_peer = [3u8; 16];
+        let member = sample_member(member_peer, MemberRole::Member);
+        store.insert_chat_member(&member).unwrap();
+        store.remove_chat_member(&sample_chat_id(), &member_peer).unwrap();
+
+        let result =
+            store.update_member_role(&sample_chat_id(), &member_peer, MemberRole::Admin);
+        assert!(matches!(result, Err(CoreError::NotFound(_))));
     }
 
     #[test]

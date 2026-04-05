@@ -2,7 +2,8 @@ use tauri::{AppHandle, State};
 
 use ghostmesh_core::crypto::encrypt::{decrypt_key_storage, decrypt_message, encrypt_message};
 use ghostmesh_core::crypto::sign::sign;
-use ghostmesh_core::types::{CoreError, Message, MessagePayload, OutboxEntry};
+use ghostmesh_core::sync::SyncEngine;
+use ghostmesh_core::types::{CoreError, Message, MessagePayload, OutboxEntry, SystemEvent};
 
 use crate::events::emit_message_new;
 use crate::state::AppState;
@@ -178,6 +179,15 @@ pub async fn get_messages(
     for message in &messages {
         let text = decrypt_message_text(&store, &chat_id_bytes, message, &password);
 
+        // Try to process rekey if this is a MemberRemoved system event
+        try_process_rekey(
+            &store,
+            &chat_id_bytes,
+            message,
+            &password,
+            &stored_identity,
+        );
+
         let author_name = members
             .iter()
             .find(|m| m.peer_id == message.author_peer_id)
@@ -203,6 +213,95 @@ pub async fn get_messages(
     }
 
     Ok(result)
+}
+
+/// Attempts to decrypt a message and, if it contains a MemberRemoved
+/// system event with a rekey package for the current user, processes
+/// the rekey to store the new group key locally.
+fn try_process_rekey(
+    store: &ghostmesh_core::store::Store,
+    chat_id: &[u8; 16],
+    message: &Message,
+    password: &str,
+    stored_identity: &ghostmesh_core::store::StoredIdentity,
+) {
+    // Check if we already have the key for this epoch — skip if so
+    if store.get_chat_key(chat_id, message.key_epoch).ok().flatten().is_some() {
+        // We may already have processed this rekey
+        // But we still need to check if the NEW epoch key is present
+    }
+
+    // Decrypt the message payload
+    let chat_key = match store.get_chat_key(chat_id, message.key_epoch) {
+        Ok(Some(key)) => key,
+        _ => return,
+    };
+
+    let group_key_bytes = match decrypt_key_storage(password, &chat_key.group_key_enc) {
+        Ok(bytes) if bytes.len() == 32 => bytes,
+        _ => return,
+    };
+
+    let mut group_key = [0u8; 32];
+    group_key.copy_from_slice(&group_key_bytes);
+
+    let plaintext = match decrypt_message(&group_key, &message.payload_nonce, &message.payload_ciphertext) {
+        Ok(data) => data,
+        Err(_) => return,
+    };
+
+    let payload: MessagePayload = match ciborium::from_reader(plaintext.as_slice()) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    let (new_key_epoch, rekey_packages) = match payload {
+        MessagePayload::SystemEvent(SystemEvent::MemberRemoved {
+            new_key_epoch,
+            rekey_packages,
+            ..
+        }) => (new_key_epoch, rekey_packages),
+        _ => return,
+    };
+
+    // Check if we already have the new epoch key
+    if store.get_chat_key(chat_id, new_key_epoch).ok().flatten().is_some() {
+        return;
+    }
+
+    // Find our rekey package
+    let my_package = match rekey_packages.iter().find(|rp| rp.target_peer_id == stored_identity.peer_id) {
+        Some(p) => p,
+        None => return,
+    };
+
+    // Decrypt own exchange_sk
+    let exchange_sk_bytes = match decrypt_key_storage(password, &stored_identity.exchange_sk_enc) {
+        Ok(bytes) if bytes.len() == 32 => bytes,
+        _ => return,
+    };
+    let mut exchange_sk = [0u8; 32];
+    exchange_sk.copy_from_slice(&exchange_sk_bytes);
+
+    // Get sender's exchange_pk
+    let members = match store.get_chat_members(chat_id) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    let sender = match members.iter().find(|m| m.peer_id == message.author_peer_id) {
+        Some(s) => s,
+        None => return,
+    };
+
+    let _ = SyncEngine::process_rekey_package(
+        store,
+        chat_id,
+        new_key_epoch,
+        my_package,
+        &exchange_sk,
+        &sender.exchange_pk,
+        password,
+    );
 }
 
 #[tauri::command]
