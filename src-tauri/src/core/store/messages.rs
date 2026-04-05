@@ -277,6 +277,44 @@ impl Store {
         Ok(messages)
     }
 
+    pub fn get_last_message_timestamp(
+        &self,
+        chat_id: &ChatId,
+    ) -> Result<Option<u64>, CoreError> {
+        let mut statement = self
+            .connection()
+            .prepare(
+                "SELECT created_at FROM messages
+                 WHERE chat_id = ?1
+                 ORDER BY lamport_ts DESC, author_peer_id DESC
+                 LIMIT 1",
+            )
+            .map_err(|e| {
+                CoreError::Store(format!(
+                    "failed to prepare get_last_message_timestamp: {e}"
+                ))
+            })?;
+
+        let mut rows = statement
+            .query_map([chat_id.as_slice()], |row| row.get::<_, u64>(0))
+            .map_err(|e| {
+                CoreError::Store(format!(
+                    "failed to query last message timestamp: {e}"
+                ))
+            })?;
+
+        match rows.next() {
+            Some(row) => Ok(Some(
+                row.map_err(|e| {
+                    CoreError::Store(format!(
+                        "failed to read last message timestamp: {e}"
+                    ))
+                })?,
+            )),
+            None => Ok(None),
+        }
+    }
+
     pub fn update_frontier(
         &self,
         chat_id: &ChatId,
@@ -435,6 +473,7 @@ mod tests {
                 owner_peer_id: sample_peer_id(),
                 created_at: 1000,
                 my_lamport_counter: 0,
+                unread_count: 0,
             })
             .unwrap();
     }
@@ -763,6 +802,44 @@ mod tests {
         let store = test_store();
         let frontier = store.get_frontier(&sample_chat_id()).unwrap();
         assert!(frontier.is_empty());
+    }
+
+    // --- Last message timestamp ---
+
+    #[test]
+    fn get_last_message_timestamp_returns_latest() {
+        let store = test_store();
+        setup_chat(&store);
+
+        let mut msg1 = sample_message(1);
+        msg1.message_id = [0x01; 32];
+        msg1.created_at = 5000;
+        let mut msg2 = sample_message(3);
+        msg2.message_id = [0x02; 32];
+        msg2.created_at = 7000;
+        let mut msg3 = sample_message(2);
+        msg3.message_id = [0x03; 32];
+        msg3.created_at = 6000;
+
+        store.insert_message(&msg1).unwrap();
+        store.insert_message(&msg2).unwrap();
+        store.insert_message(&msg3).unwrap();
+
+        let timestamp = store
+            .get_last_message_timestamp(&sample_chat_id())
+            .unwrap()
+            .unwrap();
+        // msg2 has the highest lamport_ts (3), so its created_at (7000) is returned
+        assert_eq!(timestamp, 7000);
+    }
+
+    #[test]
+    fn get_last_message_timestamp_empty_chat() {
+        let store = test_store();
+        let result = store
+            .get_last_message_timestamp(&sample_chat_id())
+            .unwrap();
+        assert!(result.is_none());
     }
 
     // --- CBOR parent_ids encoding ---

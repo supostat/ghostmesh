@@ -339,6 +339,7 @@ mod tests {
                 owner_peer_id: peer_a(),
                 created_at: 1000,
                 my_lamport_counter: 0,
+                unread_count: 0,
             })
             .unwrap();
     }

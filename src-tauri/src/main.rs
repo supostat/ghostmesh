@@ -8,6 +8,7 @@ mod tauri_event_sink;
 mod types;
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tauri::{Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
@@ -66,6 +67,11 @@ fn main() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 join_orchestrator::run_join_orchestrator(handle).await;
+            });
+
+            let cleanup_db_path = db_path_str.to_string();
+            tauri::async_runtime::spawn(async move {
+                run_periodic_cleanup(cleanup_db_path).await;
             });
 
             let update_handle = app.handle().clone();
@@ -175,6 +181,38 @@ async fn spawn_network_service(app: tauri::AppHandle, db_path: String) {
 
     let event_sink = Arc::new(TauriEventSink::new(app));
     service.run(event_sink).await;
+}
+
+const CLEANUP_INTERVAL: Duration = Duration::from_secs(300);
+const STALE_PEER_ADDRESS_MAX_AGE_SECS: u64 = 86400 * 30;
+const STALE_PEER_ADDRESS_MIN_FAILURES: u32 = 10;
+
+async fn run_periodic_cleanup(db_path: String) {
+    let store = match Store::open(&db_path) {
+        Ok(s) => s,
+        Err(error) => {
+            tracing::warn!("cleanup task: failed to open store: {error}");
+            return;
+        }
+    };
+
+    let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
+    loop {
+        interval.tick().await;
+        match store.cleanup_stale_peer_addresses(
+            STALE_PEER_ADDRESS_MAX_AGE_SECS,
+            STALE_PEER_ADDRESS_MIN_FAILURES,
+        ) {
+            Ok(removed) => {
+                if removed > 0 {
+                    tracing::info!("cleanup: removed {removed} stale peer addresses");
+                }
+            }
+            Err(error) => {
+                tracing::debug!("cleanup: failed to clean peer addresses: {error}");
+            }
+        }
+    }
 }
 
 async fn check_for_update_on_startup(app: tauri::AppHandle) {

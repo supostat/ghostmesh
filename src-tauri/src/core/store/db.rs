@@ -49,7 +49,8 @@ fn init_schema(connection: &Connection) -> Result<(), CoreError> {
                 chat_name           TEXT NOT NULL,
                 owner_peer_id       BLOB NOT NULL,
                 created_at          INTEGER NOT NULL,
-                my_lamport_counter  INTEGER NOT NULL DEFAULT 0
+                my_lamport_counter  INTEGER NOT NULL DEFAULT 0,
+                unread_count        INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS chat_members (
@@ -141,6 +142,11 @@ fn init_schema(connection: &Connection) -> Result<(), CoreError> {
             ",
         )
         .map_err(|e| CoreError::Store(format!("failed to create schema: {e}")))?;
+
+    // Migration: add unread_count to existing chats tables (no-op if column already exists)
+    let _ = connection.execute_batch(
+        "ALTER TABLE chats ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0",
+    );
 
     Ok(())
 }

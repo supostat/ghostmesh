@@ -43,6 +43,7 @@ pub struct Chat {
     pub owner_peer_id: PeerId,
     pub created_at: u64,
     pub my_lamport_counter: u64,
+    pub unread_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

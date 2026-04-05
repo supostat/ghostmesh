@@ -18,6 +18,7 @@ use crate::types::{PeerId, WireMessage};
 
 const PEER_COMMAND_CHANNEL_SIZE: usize = 64;
 const MDNS_POLL_INTERVAL: Duration = Duration::from_secs(30);
+const RECONNECT_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 pub enum NetworkCommand {
@@ -98,6 +99,7 @@ impl NetworkService {
         };
 
         let mut mdns_poll_interval = time::interval(MDNS_POLL_INTERVAL);
+        let mut reconnect_interval = time::interval(RECONNECT_INTERVAL);
 
         loop {
             tokio::select! {
@@ -141,6 +143,9 @@ impl NetworkService {
                             }
                         }
                     }
+                }
+                _ = reconnect_interval.tick() => {
+                    self.reconnect_known_peers(event_sink.clone()).await;
                 }
             }
         }
@@ -272,6 +277,38 @@ impl NetworkService {
         );
     }
 
+    async fn reconnect_known_peers(&mut self, event_sink: Arc<dyn NetEventSink>) {
+        let addresses = match self.store.lock() {
+            Ok(store) => match store.get_all_peer_addresses() {
+                Ok(addrs) => addrs,
+                Err(error) => {
+                    tracing::debug!("reconnect: failed to load peer addresses: {error}");
+                    return;
+                }
+            },
+            Err(error) => {
+                tracing::debug!("reconnect: store lock poisoned: {error}");
+                return;
+            }
+        };
+
+        for peer_address in &addresses {
+            if peer_address.peer_id == self.local_peer_id {
+                continue;
+            }
+            if self.peer_channels.contains_key(&peer_address.peer_id) {
+                continue;
+            }
+            tracing::debug!(
+                "reconnect: attempting {} at {}",
+                hex::encode(peer_address.peer_id),
+                peer_address.address
+            );
+            self.connect_to_peer(&peer_address.address, event_sink.clone())
+                .await;
+        }
+    }
+
     fn resolve_display_name(&self, peer_id: &PeerId) -> String {
         let store = match self.store.lock() {
             Ok(s) => s,
@@ -389,6 +426,7 @@ mod tests {
             owner_peer_id: test_peer_id(),
             created_at: 1000,
             my_lamport_counter: 0,
+            unread_count: 0,
         };
         store.insert_chat(&chat).unwrap();
 
@@ -506,6 +544,7 @@ mod tests {
             owner_peer_id: test_peer_id(),
             created_at: 2000,
             my_lamport_counter: 0,
+            unread_count: 0,
         };
         store.insert_chat(&chat_b).unwrap();
         let member_b = ChatMember {

@@ -6,14 +6,15 @@ impl Store {
     pub fn insert_chat(&self, chat: &Chat) -> Result<(), CoreError> {
         self.connection()
             .execute(
-                "INSERT INTO chats (chat_id, chat_name, owner_peer_id, created_at, my_lamport_counter)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO chats (chat_id, chat_name, owner_peer_id, created_at, my_lamport_counter, unread_count)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![
                     chat.chat_id.as_slice(),
                     chat.chat_name,
                     chat.owner_peer_id.as_slice(),
                     chat.created_at,
                     chat.my_lamport_counter,
+                    chat.unread_count,
                 ],
             )
             .map_err(|e| CoreError::Store(format!("failed to insert chat: {e}")))?;
@@ -24,7 +25,7 @@ impl Store {
         let mut statement = self
             .connection()
             .prepare(
-                "SELECT chat_id, chat_name, owner_peer_id, created_at, my_lamport_counter
+                "SELECT chat_id, chat_name, owner_peer_id, created_at, my_lamport_counter, unread_count
                  FROM chats WHERE chat_id = ?1",
             )
             .map_err(|e| CoreError::Store(format!("failed to prepare get_chat: {e}")))?;
@@ -37,6 +38,7 @@ impl Store {
                     owner_peer_id: blob_to_peer_id(row.get::<_, Vec<u8>>(2)?),
                     created_at: row.get(3)?,
                     my_lamport_counter: row.get(4)?,
+                    unread_count: row.get(5)?,
                 })
             })
             .map_err(|e| CoreError::Store(format!("failed to query chat: {e}")))?;
@@ -53,7 +55,7 @@ impl Store {
         let mut statement = self
             .connection()
             .prepare(
-                "SELECT chat_id, chat_name, owner_peer_id, created_at, my_lamport_counter
+                "SELECT chat_id, chat_name, owner_peer_id, created_at, my_lamport_counter, unread_count
                  FROM chats ORDER BY created_at DESC",
             )
             .map_err(|e| CoreError::Store(format!("failed to prepare list_chats: {e}")))?;
@@ -66,6 +68,7 @@ impl Store {
                     owner_peer_id: blob_to_peer_id(row.get::<_, Vec<u8>>(2)?),
                     created_at: row.get(3)?,
                     my_lamport_counter: row.get(4)?,
+                    unread_count: row.get(5)?,
                 })
             })
             .map_err(|e| CoreError::Store(format!("failed to query chats: {e}")))?;
@@ -242,6 +245,28 @@ impl Store {
             None => Ok(None),
         }
     }
+    // --- Unread count ---
+
+    pub fn increment_unread_count(&self, chat_id: &ChatId) -> Result<(), CoreError> {
+        self.connection()
+            .execute(
+                "UPDATE chats SET unread_count = unread_count + 1 WHERE chat_id = ?1",
+                [chat_id.as_slice()],
+            )
+            .map_err(|e| CoreError::Store(format!("failed to increment unread count: {e}")))?;
+        Ok(())
+    }
+
+    pub fn reset_unread_count(&self, chat_id: &ChatId) -> Result<(), CoreError> {
+        self.connection()
+            .execute(
+                "UPDATE chats SET unread_count = 0 WHERE chat_id = ?1",
+                [chat_id.as_slice()],
+            )
+            .map_err(|e| CoreError::Store(format!("failed to reset unread count: {e}")))?;
+        Ok(())
+    }
+
     // --- Pending Joins ---
 
     pub fn insert_pending_join(
@@ -436,6 +461,7 @@ mod tests {
             owner_peer_id: sample_peer_id(),
             created_at: 1000,
             my_lamport_counter: 0,
+            unread_count: 0,
         }
     }
 
@@ -487,6 +513,7 @@ mod tests {
             owner_peer_id: sample_peer_id(),
             created_at: 1000,
             my_lamport_counter: 0,
+            unread_count: 0,
         };
         let chat_b = Chat {
             chat_id: [2u8; 16],
@@ -494,6 +521,7 @@ mod tests {
             owner_peer_id: sample_peer_id(),
             created_at: 2000,
             my_lamport_counter: 5,
+            unread_count: 0,
         };
 
         store.insert_chat(&chat_a).unwrap();
@@ -686,6 +714,7 @@ mod tests {
             owner_peer_id: owner_a,
             created_at: 1000,
             my_lamport_counter: 0,
+            unread_count: 0,
         };
         let chat_b = Chat {
             chat_id: [2u8; 16],
@@ -693,6 +722,7 @@ mod tests {
             owner_peer_id: owner_b,
             created_at: 2000,
             my_lamport_counter: 0,
+            unread_count: 0,
         };
 
         store.insert_chat(&chat_a).unwrap();
@@ -781,6 +811,35 @@ mod tests {
         store.insert_chat_key(&key).unwrap();
         let result = store.insert_chat_key(&key);
         assert!(result.is_err());
+    }
+
+    // --- Unread count ---
+
+    #[test]
+    fn increment_and_reset_unread_count() {
+        let store = test_store();
+        store.insert_chat(&sample_chat()).unwrap();
+
+        store.increment_unread_count(&sample_chat_id()).unwrap();
+        let chat = store.get_chat(&sample_chat_id()).unwrap().unwrap();
+        assert_eq!(chat.unread_count, 1);
+
+        store.reset_unread_count(&sample_chat_id()).unwrap();
+        let chat = store.get_chat(&sample_chat_id()).unwrap().unwrap();
+        assert_eq!(chat.unread_count, 0);
+    }
+
+    #[test]
+    fn increment_unread_count_multiple_times() {
+        let store = test_store();
+        store.insert_chat(&sample_chat()).unwrap();
+
+        store.increment_unread_count(&sample_chat_id()).unwrap();
+        store.increment_unread_count(&sample_chat_id()).unwrap();
+        store.increment_unread_count(&sample_chat_id()).unwrap();
+
+        let chat = store.get_chat(&sample_chat_id()).unwrap().unwrap();
+        assert_eq!(chat.unread_count, 3);
     }
 
     #[test]

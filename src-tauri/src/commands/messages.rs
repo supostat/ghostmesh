@@ -165,6 +165,10 @@ pub async fn get_messages(
         .get_messages(&chat_id_bytes, before_lamport, message_limit)
         .map_err(|e| e.to_string())?;
 
+    store
+        .reset_unread_count(&chat_id_bytes)
+        .map_err(|e| e.to_string())?;
+
     let members = store
         .get_chat_members(&chat_id_bytes)
         .map_err(|e| e.to_string())?;

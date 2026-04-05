@@ -102,6 +102,7 @@ impl SyncEngine {
 
         if store.get_message(&message.message_id)?.is_none() {
             store.insert_message(&message)?;
+            store.increment_unread_count(&message.chat_id)?;
         }
 
         Ok(())
@@ -250,6 +251,7 @@ mod tests {
                 owner_peer_id: peer_a(),
                 created_at: 1000,
                 my_lamport_counter: 0,
+                unread_count: 0,
             })
             .unwrap();
     }
@@ -520,6 +522,40 @@ mod tests {
         // Still only one message in store
         let messages = store.get_messages(&chat_id(), None, 100).unwrap();
         assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn process_incoming_message_increments_unread_count() {
+        let store = test_store();
+        setup_chat(&store);
+
+        let mut lamport = LamportClock::new();
+        let msg = make_message(peer_b(), 3, 0x01);
+
+        SyncEngine::process_incoming_message(&store, msg, &mut lamport).unwrap();
+
+        let chat = store.get_chat(&chat_id()).unwrap().unwrap();
+        assert_eq!(chat.unread_count, 1);
+    }
+
+    #[test]
+    fn process_incoming_message_duplicate_does_not_increment_unread() {
+        let store = test_store();
+        setup_chat(&store);
+
+        let msg = make_message(peer_b(), 5, 0x01);
+        store.insert_message(&msg).unwrap();
+
+        // Reset unread to 0 to ensure clean baseline
+        store.reset_unread_count(&chat_id()).unwrap();
+        let chat_before = store.get_chat(&chat_id()).unwrap().unwrap();
+        assert_eq!(chat_before.unread_count, 0);
+
+        let mut lamport = LamportClock::new();
+        SyncEngine::process_incoming_message(&store, msg, &mut lamport).unwrap();
+
+        let chat_after = store.get_chat(&chat_id()).unwrap().unwrap();
+        assert_eq!(chat_after.unread_count, 0);
     }
 
     // --- Full sync cycle simulation ---

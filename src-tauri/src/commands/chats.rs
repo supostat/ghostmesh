@@ -37,6 +37,7 @@ pub async fn create_chat(
         owner_peer_id: stored_identity.peer_id,
         created_at,
         my_lamport_counter: 0,
+        unread_count: 0,
     };
     store.insert_chat(&chat).map_err(|e| e.to_string())?;
 
@@ -107,6 +108,10 @@ pub async fn list_chats(state: State<'_, AppState>) -> Result<Vec<ChatInfo>, Str
             .map(|pj| pj.pending)
             .unwrap_or(false);
 
+        let last_message_at = store
+            .get_last_message_timestamp(&chat.chat_id)
+            .unwrap_or(None);
+
         result.push(ChatInfo {
             chat_id: hex::encode(chat.chat_id),
             chat_name: chat.chat_name.clone(),
@@ -115,8 +120,8 @@ pub async fn list_chats(state: State<'_, AppState>) -> Result<Vec<ChatInfo>, Str
             member_count: active_members.len() as u32,
             online_count,
             last_message_preview: None,
-            last_message_at: None,
-            unread_count: 0,
+            last_message_at,
+            unread_count: chat.unread_count,
             pending_key_exchange,
         });
     }
@@ -257,6 +262,7 @@ pub async fn join_chat(
         owner_peer_id: invite.owner_peer_id,
         created_at: invite.created_at,
         my_lamport_counter: 0,
+        unread_count: 0,
     };
     store.insert_chat(&chat).map_err(|e| e.to_string())?;
 
