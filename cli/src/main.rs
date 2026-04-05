@@ -3,13 +3,12 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 use ghostmesh_core::crypto::encrypt::{decrypt_key_storage, decrypt_message, encrypt_key_storage};
-use ghostmesh_core::crypto::identity::{derive_peer_id, generate_identity};
+use ghostmesh_core::crypto::identity::generate_identity;
 use ghostmesh_core::crypto::sign::sign;
 use ghostmesh_core::store::Store;
-use ghostmesh_core::sync::engine::SyncEngine;
 use ghostmesh_core::sync::lamport::LamportClock;
 use ghostmesh_core::types::{
-    Chat, ChatKey, ChatMember, CoreError, GroupKey, MemberRole, Message, MessagePayload,
+    Chat, ChatKey, ChatMember, GroupKey, MemberRole, Message, MessagePayload,
     OutboxEntry,
 };
 
@@ -358,6 +357,7 @@ fn cmd_create_chat(store: &Store, password: &str, name: &str) {
         owner_peer_id: stored.peer_id,
         created_at,
         my_lamport_counter: 0,
+        unread_count: 0,
     };
     store.insert_chat(&chat).expect("failed to insert chat");
 
